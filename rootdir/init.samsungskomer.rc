@@ -50,6 +50,9 @@ on init
     mkdir /debug
     mount debugfs none /debug
 
+    # Preload libjhead for camera
+    export LD_PRELOAD /system/lib/libjhead.so
+
     # Prevents permission denied error for telephony
     chmod 0644 /proc/cmdline
 
