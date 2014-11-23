@@ -63,7 +63,9 @@ PRODUCT_COPY_FILES += \
     $(LOCAL_PATH)/configs/etc/media_codecs.xml:system/etc/media_codecs.xml \
     $(LOCAL_PATH)/configs/omxloaders:system/omxloaders
 PRODUCT_PACKAGES += \
-    libomxil-bellagio
+    libomxil-bellagio \
+    audio.r_submix.default
+
 PRODUCT_PROPERTY_OVERRIDES += \
     ste.nmf.autoidle=1 \
     ste.video.dec.mpeg4.in.size=8192 \
@@ -125,7 +127,8 @@ PRODUCT_PACKAGES += \
     audio.usb.default \
     libasound \
     libaudioutils \
-    libtinyalsa
+    libtinyalsa \
+    libmemtrack
 
 # Sensors
 PRODUCT_PACKAGES += \
