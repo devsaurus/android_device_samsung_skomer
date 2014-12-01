@@ -16,4 +16,4 @@
 #
 
 PRODUCT_MAKEFILES := \
-    $(LOCAL_DIR)/skomer.mk
+    $(LOCAL_DIR)/aosp_skomer.mk
