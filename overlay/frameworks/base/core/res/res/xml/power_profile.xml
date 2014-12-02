@@ -43,3 +43,4 @@
     <!-- This is the battery capacity in mAh (measured at nominal voltage) -->
     <item name="battery.capacity">1700</item>
 </device>
+

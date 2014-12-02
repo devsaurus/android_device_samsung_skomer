@@ -61,10 +61,17 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_COPY_FILES += \
     $(LOCAL_PATH)/configs/etc/media_profiles.xml:system/etc/media_profiles.xml \
     $(LOCAL_PATH)/configs/etc/media_codecs.xml:system/etc/media_codecs.xml \
-    $(LOCAL_PATH)/configs/omxloaders:system/omxloaders
+    $(LOCAL_PATH)/configs/omxloaders:system/omxloaders \
+    frameworks/av/media/libstagefright/data/media_codecs_ffmpeg.xml:system/etc/media_codecs_ffmpeg.xml \
+    frameworks/av/media/libstagefright/data/media_codecs_google_audio.xml:system/etc/media_codecs_google_audio.xml \
+    frameworks/av/media/libstagefright/data/media_codecs_google_telephony.xml:system/etc/media_codecs_google_telephony.xml \
+    frameworks/av/media/libstagefright/data/media_codecs_google_video.xml:system/etc/media_codecs_google_video.xml
+
 PRODUCT_PACKAGES += \
     libomxil-bellagio
+
 PRODUCT_PROPERTY_OVERRIDES += \
+    media.stagefright.use-awesome=1 \
     ste.nmf.autoidle=1 \
     ste.video.dec.mpeg4.in.size=8192 \
     ste.video.enc.out.buffercnt=5 \
