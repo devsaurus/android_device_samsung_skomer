@@ -95,8 +95,8 @@
          that can be set by the user. -->
     <integer name="config_screenBrightnessDim">20</integer>
 
-    <!-- Device supports LED flashlight -->
-    <bool name="config_enableTorch">true</bool>
+    <!-- Device supports LED flashlight
+    <bool name="config_enableTorch">true</bool> -->
 
    <!-- Package name(s) containing location provider support.
          These packages can contain services implementing location providers,
