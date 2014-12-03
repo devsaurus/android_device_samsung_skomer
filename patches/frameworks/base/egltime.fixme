@@ -1,0 +1,28 @@
+From 0b3ad529f790625d8169d4d414b0a3165712650d Mon Sep 17 00:00:00 2001
+From: Robert Rozic <rooobertinhooo@gmail.com>
+Date: Sat, 1 Feb 2014 18:10:19 +0100
+Subject: [PATCH] Fix STE OMX
+
+---
+ core/jni/android_view_HardwareRenderer.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/core/jni/android_view_HardwareRenderer.cpp b/core/jni/android_view_HardwareRenderer.cpp
+index 479fbe2..712e76b 100644
+--- a/core/jni/android_view_HardwareRenderer.cpp
++++ b/core/jni/android_view_HardwareRenderer.cpp
+@@ -125,9 +125,11 @@ static void android_view_HardwareRenderer_beginFrame(JNIEnv* env, jobject clazz,
+ }
+ 
+ static jlong android_view_HardwareRenderer_getSystemTime(JNIEnv* env, jobject clazz) {
++#ifndef STE_HARDWARE
+     if (uirenderer::Extensions::getInstance().hasNvSystemTime()) {
+         return eglGetSystemTimeNV();
+     }
++#endif
+     return systemTime(SYSTEM_TIME_MONOTONIC);
+ }
+ 
+-- 
+1.9.3
+

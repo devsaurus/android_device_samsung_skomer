@@ -1,0 +1,65 @@
+From 553dad97353f4fd2ad13d47685cce0b6cad94cf5 Mon Sep 17 00:00:00 2001
+From: Meticulus <theonejohnnyd@gmail.com>
+Date: Sun, 5 Oct 2014 14:40:47 -0500
+Subject: [PATCH] MediaCodec - use software decoder/encoder h264
+
+-Either our OMX patch is incompleted or our h.264 encoder/decoders
+do not properly implement functions of the MediaCodec class
+introduced in API 16 (JellyBean). So the solution here
+is to use software encoder/decoder for video/avc.
+
+NOTE: this also requires a patch in libstagefright to skip codec
+configuration when a software encoder/decoder is detected and
+to add software encoders to the media_codecs.xml
+
+Change-Id: I787057fa39e6b674e832a3f762436e1a5403f6d2
+---
+ media/java/android/media/MediaCodec.java |   22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/media/java/android/media/MediaCodec.java b/media/java/android/media/MediaCodec.java
+index 5175830..8caec0f 100644
+--- a/media/java/android/media/MediaCodec.java
++++ b/media/java/android/media/MediaCodec.java
+@@ -22,6 +22,7 @@ import android.media.MediaCrypto;
+ import android.media.MediaFormat;
+ import android.os.Bundle;
+ import android.view.Surface;
++import android.util.Log;
+ 
+ import java.nio.ByteBuffer;
+ import java.util.Arrays;
+@@ -204,10 +205,29 @@ final public class MediaCodec {
+         return new MediaCodec(
+                 name, false /* nameIsType */, false /* unused */);
+     }
+-
++    private String mName = "";
+     private MediaCodec(
+             String name, boolean nameIsType, boolean encoder) {
++
++	/* Meticulus:
++	 * STE OMX encoder and decoders don't seem to work when
++	 * directly accessed via this class, so  use software
++         * decoder/encoder for video/avc. Note: had to add OMX.google.h264.encoder
++         * to media_codecs.xml. The configuration below works with Instagram (10/5/2014)
++         */
++	if(name.equals("video/avc") && !encoder){
++		nameIsType = false;
++		name = "OMX.ffmpeg.h264.decoder";
++		Log.i("MediaCodec"," force use " + name + " isEncoder=" + String.valueOf(encoder));
++	}
++        else if(name.equals("video/avc") && encoder){
++		nameIsType = false;
++		name = "OMX.google.h264.encoder";
++		Log.i("MediaCodec"," force use " + name + " isEncoder=" + String.valueOf(encoder));
++	}
++
+         native_setup(name, nameIsType, encoder);
++	mName = name;
+     }
+ 
+     @Override
+-- 
+1.7.9.5
+

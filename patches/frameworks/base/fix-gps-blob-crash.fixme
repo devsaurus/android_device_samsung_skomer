@@ -1,0 +1,20 @@
+diff --git a/services/java/com/android/server/location/GpsLocationProvider.java b/services/java/com/android/server/location/GpsLocationProvider.java
+index 5242957..ea7043a 100644
+--- a/services/java/com/android/server/location/GpsLocationProvider.java
++++ b/services/java/com/android/server/location/GpsLocationProvider.java
+@@ -611,7 +611,14 @@ public class GpsLocationProvider implements LocationProviderInterface {
+     }
+ 
+     private void handleUpdateNetworkState(int state, NetworkInfo info) {
+-        mNetworkAvailable = (state == LocationProvider.AVAILABLE);
++
++	/*
++	 * Meticulus:
++	 * If GPS is not on then bail out of here!
++         */
++        LocationManager manager = (LocationManager) mContext.getSystemService( Context.LOCATION_SERVICE );
++        if ( !manager.isProviderEnabled( LocationManager.GPS_PROVIDER ) )
++            return;
+ 
+         if (DEBUG) {
+             Log.d(TAG, "updateNetworkState " + (mNetworkAvailable ? "available" : "unavailable")

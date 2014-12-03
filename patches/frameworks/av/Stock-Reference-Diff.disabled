@@ -1,0 +1,5254 @@
+diff -ruN av/camera/CameraParameters.cpp /media/Exhibit/s1-4.1/frameworks/av/camera/CameraParameters.cpp
+--- av/camera/CameraParameters.cpp	2014-10-03 18:58:10.544876076 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/camera/CameraParameters.cpp	2014-01-07 19:45:24.000000000 -0600
+@@ -148,9 +148,16 @@
+ const char CameraParameters::SCENE_MODE_BARCODE[] = "barcode";
+ 
+ const char CameraParameters::PIXEL_FORMAT_YUV422SP[] = "yuv422sp";
++const char CameraParameters::PIXEL_FORMAT_YUV420P[] = "yuv420p";
+ const char CameraParameters::PIXEL_FORMAT_YUV420SP[] = "yuv420sp";
++const char CameraParameters::PIXEL_FORMAT_YUV420SPNV12[] = "yuv420spnv12";
+ const char CameraParameters::PIXEL_FORMAT_YUV422I[] = "yuv422i-yuyv";
+-const char CameraParameters::PIXEL_FORMAT_YUV420P[]  = "yuv420p";
++const char CameraParameters::PIXEL_FORMAT_UYV422I[] = "yuv422i-uyvy";
++const char CameraParameters::PIXEL_FORMAT_YUV420MB[] = "yuv420mb";
++const char CameraParameters::PIXEL_FORMAT_YVU422SP[] = "yvu422sp";
++const char CameraParameters::PIXEL_FORMAT_YVU422P[] = "yvu422p";
++const char CameraParameters::PIXEL_FORMAT_YVU420SP[] = "yvu420sp";
++const char CameraParameters::PIXEL_FORMAT_YVU420P[]  = "yvu420p";
+ const char CameraParameters::PIXEL_FORMAT_RGB565[] = "rgb565";
+ const char CameraParameters::PIXEL_FORMAT_RGBA8888[] = "rgba8888";
+ const char CameraParameters::PIXEL_FORMAT_JPEG[] = "jpeg";
+@@ -165,6 +172,10 @@
+ const char CameraParameters::FOCUS_MODE_CONTINUOUS_VIDEO[] = "continuous-video";
+ const char CameraParameters::FOCUS_MODE_CONTINUOUS_PICTURE[] = "continuous-picture";
+ 
++// keys for record stride and sliceheight
++const char CameraParameters::KEY_RECORD_STRIDE[] = "record-stride";
++const char CameraParameters::KEY_RECORD_SLICE_HEIGHT[] = "record-slice-height";
++
+ CameraParameters::CameraParameters()
+                 : mMap()
+ {
+diff -ruN av/cmds/stagefright/recordvideo.cpp /media/Exhibit/s1-4.1/frameworks/av/cmds/stagefright/recordvideo.cpp
+--- av/cmds/stagefright/recordvideo.cpp	2014-10-03 18:58:10.548876076 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/cmds/stagefright/recordvideo.cpp	2014-01-07 19:45:25.000000000 -0600
+@@ -34,7 +34,7 @@
+     fprintf(stderr, "usage: %s\n", me);
+     fprintf(stderr, "       -h(elp)\n");
+     fprintf(stderr, "       -b bit rate in bits per second (default: 300000)\n");
+-    fprintf(stderr, "       -c YUV420 color format: [0] semi planar or [1] planar or other omx YUV420 color format (default: 1)\n");
++    fprintf(stderr, "       -c YUV420 color format: [0] semi planar or [1] planar or [2] MBTiled or other omx YUV420 color format (default: 1)\n");
+     fprintf(stderr, "       -f frame rate in frames per second (default: 30)\n");
+     fprintf(stderr, "       -i I frame interval in seconds (default: 1)\n");
+     fprintf(stderr, "       -n number of frames to be recorded (default: 300)\n");
+@@ -43,6 +43,7 @@
+     fprintf(stderr, "       -l encoder level. see omx il header (default: encoder specific)\n");
+     fprintf(stderr, "       -p encoder profile. see omx il header (default: encoder specific)\n");
+     fprintf(stderr, "       -v video codec: [0] AVC [1] M4V [2] H263 (default: 0)\n");
++    fprintf(stderr, "       -y YUV file input (default: NULL)\n");
+     fprintf(stderr, "The output file is /sdcard/output.mp4\n");
+     exit(1);
+ }
+@@ -50,13 +51,14 @@
+ class DummySource : public MediaSource {
+ 
+ public:
+-    DummySource(int width, int height, int nFrames, int fps, int colorFormat)
++    DummySource(int width, int height, int nFrames, int fps, int colorFormat, int fd)
+         : mWidth(width),
+           mHeight(height),
+           mMaxNumFrames(nFrames),
+           mFrameRate(fps),
+           mColorFormat(colorFormat),
+-          mSize((width * height * 3) / 2) {
++          mSize((width * height * 3) / 2),
++          mFd((FILE*)fd){
+ 
+         mGroup.add_buffer(new MediaBuffer(mSize));
+     }
+@@ -82,6 +84,7 @@
+ 
+     virtual status_t read(
+             MediaBuffer **buffer, const MediaSource::ReadOptions *options) {
++        int bytesCopied = 0;
+ 
+         if (mNumFramesOutput % 10 == 0) {
+             fprintf(stderr, ".");
+@@ -95,22 +98,40 @@
+             return err;
+         }
+ 
++        // Read a YUV frame from the file into the buffer
++        if (mFd != NULL) {
++            bytesCopied = fread((*buffer)->data(), 1, mSize, mFd);
++        }
++
+         // We don't care about the contents. we just test video encoder
+         // Also, by skipping the content generation, we can return from
+         // read() much faster.
+         //char x = (char)((double)rand() / RAND_MAX * 255);
+         //memset((*buffer)->data(), x, mSize);
+-        (*buffer)->set_range(0, mSize);
+-        (*buffer)->meta_data()->clear();
+-        (*buffer)->meta_data()->setInt64(
+-                kKeyTime, (mNumFramesOutput * 1000000) / mFrameRate);
+-        ++mNumFramesOutput;
+ 
+-        return OK;
++        if (mFd == NULL || bytesCopied == mSize) {
++            (*buffer)->set_range(0, mSize);
++            (*buffer)->meta_data()->clear();
++            (*buffer)->meta_data()->setInt64(kKeyTime,(mNumFramesOutput * 1000000) / mFrameRate);
++
++            ++mNumFramesOutput;
++            return OK;
++        } else {
++            if (mFd != NULL) {
++                fclose(mFd);
++            }
++            mFd = NULL;
++            return ERROR_END_OF_STREAM;
++        }
+     }
+ 
+ protected:
+-    virtual ~DummySource() {}
++    virtual ~DummySource() {
++        if (mFd != NULL) {
++            fclose(mFd);
++            mFd = NULL;
++        }
++    }
+ 
+ private:
+     MediaBufferGroup mGroup;
+@@ -119,7 +140,8 @@
+     int mFrameRate;
+     int mColorFormat;
+     size_t mSize;
+-    int64_t mNumFramesOutput;;
++    int64_t mNumFramesOutput;
++    FILE* mFd;
+ 
+     DummySource(const DummySource &);
+     DummySource &operator=(const DummySource &);
+@@ -128,6 +150,7 @@
+ enum {
+     kYUV420SP = 0,
+     kYUV420P  = 1,
++    kYUV420MB = 2, // STE proprietary color format
+ };
+ 
+ // returns -1 if mapping of the given color is unsuccessful
+@@ -138,6 +161,9 @@
+             return OMX_COLOR_FormatYUV420SemiPlanar;
+         case kYUV420P:
+             return OMX_COLOR_FormatYUV420Planar;
++        case kYUV420MB:
++            // STE proprietory color format
++            return OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB;
+         default:
+             fprintf(stderr, "Custom OMX color format: %d\n", color);
+             if (color == OMX_TI_COLOR_FormatYUV420PackedSemiPlanar ||
+@@ -161,11 +187,12 @@
+     int level = -1;        // Encoder specific default
+     int profile = -1;      // Encoder specific default
+     int codec = 0;
++    FILE *fd = NULL;
+     const char *fileName = "/sdcard/output.mp4";
+ 
+     android::ProcessState::self()->startThreadPool();
+     int res;
+-    while ((res = getopt(argc, argv, "b:c:f:i:n:w:t:l:p:v:h")) >= 0) {
++    while ((res = getopt(argc, argv, "b:c:f:i:n:w:t:l:p:v:y:h")) >= 0) {
+         switch (res) {
+             case 'b':
+             {
+@@ -233,6 +260,16 @@
+                 break;
+             }
+ 
++            case 'y':
++            {
++                fd = fopen(optarg,"rb");
++                if (fd == NULL) {
++                    fprintf(stderr, "Error: Unable to open the file\n");
++                    return -1;
++                }
++            }
++            break;
++
+             case 'h':
+             default:
+             {
+@@ -247,7 +284,7 @@
+ 
+     status_t err = OK;
+     sp<MediaSource> source =
+-        new DummySource(width, height, nFrames, frameRateFps, colorFormat);
++        new DummySource(width, height, nFrames, frameRateFps, colorFormat, (int)fd);
+ 
+     sp<MetaData> enc_meta = new MetaData;
+     switch (codec) {
+diff -ruN av/.git/HEAD /media/Exhibit/s1-4.1/frameworks/av/.git/HEAD
+--- av/.git/HEAD	2014-10-06 09:00:04.527367955 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/.git/HEAD	2014-01-07 19:45:25.000000000 -0600
+@@ -1 +1 @@
+-2df63ad6bbf0ad0fd066592b44f2e15123513112
++900ef0175c19d6eb74d57d5915e8e1fe5c22c506
+Binary files av/.git/index and /media/Exhibit/s1-4.1/frameworks/av/.git/index differ
+diff -ruN av/include/camera/CameraParameters.h /media/Exhibit/s1-4.1/frameworks/av/include/camera/CameraParameters.h
+--- av/include/camera/CameraParameters.h	2014-10-03 18:58:10.556876076 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/camera/CameraParameters.h	2014-01-07 19:45:25.000000000 -0600
+@@ -597,9 +597,16 @@
+     // Pixel color formats for KEY_PREVIEW_FORMAT, KEY_PICTURE_FORMAT,
+     // and KEY_VIDEO_FRAME_FORMAT
+     static const char PIXEL_FORMAT_YUV422SP[];
++    static const char PIXEL_FORMAT_YUV420P[]; // YV12
+     static const char PIXEL_FORMAT_YUV420SP[]; // NV21
++    static const char PIXEL_FORMAT_YUV420SPNV12[]; // NV12
+     static const char PIXEL_FORMAT_YUV422I[]; // YUY2
+-    static const char PIXEL_FORMAT_YUV420P[]; // YV12
++    static const char PIXEL_FORMAT_UYV422I[];
++    static const char PIXEL_FORMAT_YVU422SP[];
++    static const char PIXEL_FORMAT_YVU422P[];
++    static const char PIXEL_FORMAT_YVU420SP[];
++    static const char PIXEL_FORMAT_YVU420P[];
++    static const char PIXEL_FORMAT_YUV420MB[];
+     static const char PIXEL_FORMAT_RGB565[];
+     static const char PIXEL_FORMAT_RGBA8888[];
+     static const char PIXEL_FORMAT_JPEG[];
+@@ -658,6 +665,10 @@
+     // other modes.
+     static const char FOCUS_MODE_CONTINUOUS_PICTURE[];
+ 
++    // keys for record stride and slice height
++    static const char KEY_RECORD_STRIDE[];
++    static const char KEY_RECORD_SLICE_HEIGHT[];
++
+ private:
+     DefaultKeyedVector<String8,String8>    mMap;
+ };
+diff -ruN av/include/media/stagefright/ColorConverter.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/ColorConverter.h
+--- av/include/media/stagefright/ColorConverter.h	2014-10-03 18:57:52.888875412 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/ColorConverter.h	2014-01-07 19:45:26.000000000 -0600
+@@ -73,6 +73,9 @@
+     status_t convertQCOMYUV420SemiPlanar(
+             const BitmapParams &src, const BitmapParams &dst);
+ 
++    status_t convertSTEYUV420PackedSemiPlanarMB(
++            const BitmapParams &src, const BitmapParams &dst);
++
+     status_t convertYUV420SemiPlanar(
+             const BitmapParams &src, const BitmapParams &dst);
+ 
+diff -ruN av/include/media/stagefright/DataSource.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/DataSource.h
+--- av/include/media/stagefright/DataSource.h	2014-10-03 18:58:10.564876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/DataSource.h	2014-01-07 19:45:26.000000000 -0600
+@@ -90,6 +90,9 @@
+         return String8();
+     }
+ 
++    void setCharUri(const char* uri);
++    const char* getCharUri();
++
+     virtual String8 getMIMEType() const;
+ 
+ protected:
+@@ -101,6 +104,8 @@
+ 
+     DataSource(const DataSource &);
+     DataSource &operator=(const DataSource &);
++
++    String8 mUri;
+ };
+ 
+ }  // namespace android
+diff -ruN av/include/media/stagefright/FMRadioSource.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/FMRadioSource.h
+--- av/include/media/stagefright/FMRadioSource.h	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/FMRadioSource.h	2014-01-07 19:45:26.000000000 -0600
+@@ -0,0 +1,64 @@
++/*
++ * Copyright (C) ST-Ericsson SA 2012
++ * Copyright (C) 2012 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Author: Stefan Ekenberg (stefan.ekenberg@stericsson.com) for ST-Ericsson
++ */
++
++#ifndef FMRADIO_SOURCE_H_
++
++#define FMRADIO_SOURCE_H_
++
++#include <media/AudioRecord.h>
++#include <media/stagefright/DataSource.h>
++#include <media/stagefright/foundation/ABase.h>
++#include <system/audio.h>
++
++namespace android {
++
++class FMRadioSource : public DataSource {
++public:
++    FMRadioSource();
++
++    virtual status_t initCheck() const;
++    virtual ssize_t readAt(off64_t offset, void *data, size_t size);
++    virtual status_t getSize(off64_t *size);
++
++protected:
++    virtual ~FMRadioSource();
++
++private:
++    struct Buffer {
++        size_t  frameCount;
++        size_t  size;
++        int8_t* data;
++    };
++
++    status_t openRecord(int frameCount, audio_io_handle_t input);
++    status_t obtainBuffer(Buffer* audioBuffer);
++
++    status_t mInitCheck;
++    bool mStarted;
++    int mSessionId;
++    sp<IAudioRecord> mAudioRecord;
++    sp<IMemory> mCblkMemory;
++    audio_track_cblk_t* mCblk;
++
++    DISALLOW_EVIL_CONSTRUCTORS(FMRadioSource);
++};
++
++}  // namespace android
++
++#endif  // FMRADIO_SOURCE_H_
+diff -ruN av/include/media/stagefright/foundation/ABitReader.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/foundation/ABitReader.h
+--- av/include/media/stagefright/foundation/ABitReader.h	2014-10-03 18:57:52.892875412 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/foundation/ABitReader.h	2014-01-07 19:45:26.000000000 -0600
+@@ -31,6 +31,7 @@
+     uint32_t getBits(size_t n);
+     void skipBits(size_t n);
+ 
++    void rewindBits(size_t n);
+     void putBits(uint32_t x, size_t n);
+ 
+     size_t numBitsLeft() const;
+@@ -39,7 +40,9 @@
+ 
+ private:
+     const uint8_t *mData;
++    const uint8_t *mOriginalData;
+     size_t mSize;
++    size_t mOriginalSize;
+ 
+     uint32_t mReservoir;  // left-aligned bits
+     size_t mNumBitsLeft;
+diff -ruN av/include/media/stagefright/MediaDefs.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MediaDefs.h
+--- av/include/media/stagefright/MediaDefs.h	2014-10-03 18:58:10.568876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MediaDefs.h	2014-01-07 19:45:26.000000000 -0600
+@@ -26,8 +26,10 @@
+ extern const char *MEDIA_MIMETYPE_VIDEO_AVC;
+ extern const char *MEDIA_MIMETYPE_VIDEO_MPEG4;
+ extern const char *MEDIA_MIMETYPE_VIDEO_H263;
++extern const char *MEDIA_MIMETYPE_VIDEO_H263_SW;
+ extern const char *MEDIA_MIMETYPE_VIDEO_MPEG2;
+ extern const char *MEDIA_MIMETYPE_VIDEO_RAW;
++extern const char *MEDIA_MIMETYPE_VIDEO_VC1;
+ 
+ extern const char *MEDIA_MIMETYPE_AUDIO_AMR_NB;
+ extern const char *MEDIA_MIMETYPE_AUDIO_AMR_WB;
+@@ -35,6 +37,7 @@
+ extern const char *MEDIA_MIMETYPE_AUDIO_MPEG_LAYER_I;
+ extern const char *MEDIA_MIMETYPE_AUDIO_MPEG_LAYER_II;
+ extern const char *MEDIA_MIMETYPE_AUDIO_AAC;
++extern const char *MEDIA_MIMETYPE_AUDIO_AAC_ELD;
+ extern const char *MEDIA_MIMETYPE_AUDIO_QCELP;
+ extern const char *MEDIA_MIMETYPE_AUDIO_VORBIS;
+ extern const char *MEDIA_MIMETYPE_AUDIO_G711_ALAW;
+@@ -42,6 +45,7 @@
+ extern const char *MEDIA_MIMETYPE_AUDIO_RAW;
+ extern const char *MEDIA_MIMETYPE_AUDIO_FLAC;
+ extern const char *MEDIA_MIMETYPE_AUDIO_AAC_ADTS;
++extern const char *MEDIA_MIMETYPE_AUDIO_WMA;
+ 
+ extern const char *MEDIA_MIMETYPE_CONTAINER_MPEG4;
+ extern const char *MEDIA_MIMETYPE_CONTAINER_WAV;
+@@ -52,6 +56,7 @@
+ extern const char *MEDIA_MIMETYPE_CONTAINER_MPEG2PS;
+ 
+ extern const char *MEDIA_MIMETYPE_CONTAINER_WVM;
++extern const char *MEDIA_MIMETYPE_CONTAINER_ASF;
+ 
+ extern const char *MEDIA_MIMETYPE_TEXT_3GPP;
+ extern const char *MEDIA_MIMETYPE_TEXT_SUBRIP;
+diff -ruN av/include/media/stagefright/MediaErrors.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MediaErrors.h
+--- av/include/media/stagefright/MediaErrors.h	2014-10-03 18:58:10.568876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MediaErrors.h	2014-01-07 19:45:26.000000000 -0600
+@@ -64,7 +64,13 @@
+ 
+     // Heartbeat Error Codes
+     HEARTBEAT_ERROR_BASE = -3000,
+-    ERROR_HEARTBEAT_TERMINATE_REQUESTED                     = HEARTBEAT_ERROR_BASE,
++    ERROR_HEARTBEAT_AUTHENTICATION_FAILURE                  = HEARTBEAT_ERROR_BASE,
++    ERROR_HEARTBEAT_NO_ACTIVE_PURCHASE_AGREEMENT            = HEARTBEAT_ERROR_BASE - 1,
++    ERROR_HEARTBEAT_CONCURRENT_PLAYBACK                     = HEARTBEAT_ERROR_BASE - 2,
++    ERROR_HEARTBEAT_UNUSUAL_ACTIVITY                        = HEARTBEAT_ERROR_BASE - 3,
++    ERROR_HEARTBEAT_STREAMING_UNAVAILABLE                   = HEARTBEAT_ERROR_BASE - 4,
++    ERROR_HEARTBEAT_CANNOT_ACTIVATE_RENTAL                  = HEARTBEAT_ERROR_BASE - 5,
++    ERROR_HEARTBEAT_TERMINATE_REQUESTED                     = HEARTBEAT_ERROR_BASE - 6,
+ };
+ 
+ }  // namespace android
+diff -ruN av/include/media/stagefright/MetaData.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MetaData.h
+--- av/include/media/stagefright/MetaData.h	2014-10-03 18:58:10.568876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/MetaData.h	2014-01-07 19:45:26.000000000 -0600
+@@ -154,12 +154,20 @@
+     kKeyCryptoKey         = 'cryK',  // uint8_t[16]
+     kKeyCryptoIV          = 'cryI',  // uint8_t[16]
+     kKeyCryptoMode        = 'cryM',  // int32_t
++
++    // To store the extracted metadata in VC1 streams
++    kKeyVC1Info = 'info',  //raw data
++
++    // To store the extracted metadata in WMA streams
++    kKeyWMAInfo = 'wmai', //raw data
+ };
+ 
+ enum {
+     kTypeESDS        = 'esds',
+     kTypeAVCC        = 'avcc',
+     kTypeD263        = 'd263',
++    kTypeVC1         = 'wmv3',
++    kTypeWMA         = 'wmau',
+ };
+ 
+ class MetaData : public RefBase {
+diff -ruN av/include/media/stagefright/OMXCodec.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/OMXCodec.h
+--- av/include/media/stagefright/OMXCodec.h	2014-10-03 18:58:10.568876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/OMXCodec.h	2014-01-07 19:45:26.000000000 -0600
+@@ -86,6 +86,8 @@
+     // from MediaBufferObserver
+     virtual void signalBufferReturned(MediaBuffer *buffer);
+ 
++    static uint32_t OmxToHALFormat(OMX_COLOR_FORMATTYPE omxValue);
++
+     enum Quirks {
+         kNeedsFlushBeforeDisable              = 1,
+         kWantsNALFragments                    = 2,
+@@ -101,6 +103,8 @@
+         kAvoidMemcopyInputRecordingFrames     = 2048,
+         kRequiresLargerEncoderOutputBuffer    = 4096,
+         kOutputBuffersAreUnreadable           = 8192,
++        kRequiresStoreMetaDataBeforeIdle      = 16384,
++        kOverrideDefaultAVCProfile            = 32768,
+     };
+ 
+     // for use by ACodec
+@@ -246,6 +250,7 @@
+             int32_t aacProfile, bool isADTS);
+ 
+     void setG711Format(int32_t numChannels);
++    status_t setWMAFormat(const sp<MetaData> &meta);
+ 
+     status_t setVideoPortFormatType(
+             OMX_U32 portIndex,
+@@ -352,6 +357,8 @@
+     status_t parseAVCCodecSpecificData(
+             const void *data, size_t size,
+             unsigned *profile, unsigned *level);
++    status_t parseVC1CodecSpecificData(
++            const void *data, size_t size);
+ 
+     OMXCodec(const OMXCodec &);
+     OMXCodec &operator=(const OMXCodec &);
+diff -ruN av/include/media/stagefright/SurfaceMediaSource.h /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/SurfaceMediaSource.h
+--- av/include/media/stagefright/SurfaceMediaSource.h	2014-10-03 18:58:10.568876077 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/include/media/stagefright/SurfaceMediaSource.h	2014-01-07 19:45:26.000000000 -0600
+@@ -24,6 +24,7 @@
+ #include <utils/Vector.h>
+ #include <media/stagefright/MediaSource.h>
+ #include <media/stagefright/MediaBuffer.h>
++#include <hardware/copybit.h>
+ 
+ namespace android {
+ // ----------------------------------------------------------------------------
+@@ -56,7 +57,8 @@
+                                 public MediaBufferObserver,
+                                 protected BufferQueue::ConsumerListener {
+ public:
+-    enum { MIN_UNDEQUEUED_BUFFERS = 4};
++    enum { MIN_UNDEQUEUED_BUFFERS = 4,
++           MAX_UNDEQUEUED_BUFFERS = 10 };
+ 
+     struct FrameAvailableListener : public virtual RefBase {
+         // onFrameAvailable() is called from queueBuffer() is the FIFO is
+@@ -165,6 +167,10 @@
+     // this list in signalBufferReturned
+     Vector<sp<GraphicBuffer> > mCurrentBuffers;
+ 
++    // mCurrentBuffersDQ is used to free buffers of mBufferSlot. This is used
++    // only when conversion takes place.
++    Vector<sp<GraphicBuffer> > mCurrentBuffersDQ;
++
+     // mCurrentTimestamp is the timestamp for the current texture. It
+     // gets set to mLastQueuedTimestamp each time updateTexImage is called.
+     int64_t mCurrentTimestamp;
+@@ -208,6 +214,30 @@
+ 
+     // Avoid copying and equating and default constructor
+     DISALLOW_IMPLICIT_CONSTRUCTORS(SurfaceMediaSource);
++
++    // mGraphicBufferAlloc is the connection to SurfaceFlinger that is used to
++    // allocate new GraphicBuffer objects.
++    sp<IGraphicBufferAlloc> mGraphicBufferAlloc;
++
++    // HAL pixel format for yuv buffer
++    int mYuvPixelFormat;
++
++    // Set true when read called for first time
++    // Used to avoid setting of 'mStopped' Flag in onBuffersReleased when
++    // setBufferCount is called for first time
++    bool mIsReading;
++
++    sp<GraphicBuffer> mGraphicBufferYuv[MAX_UNDEQUEUED_BUFFERS];
++
++    // returns TRUE if buffer needs color format conversion
++    bool conversionIsNeeded(const sp<GraphicBuffer>& graphicBuffer);
++
++    // converts buffer to a suitable color format
++    status_t convert(const sp<GraphicBuffer> &srcBuf, const sp<GraphicBuffer> &dstBuf);
++
++    // mBlitEngine is the handle to the copybit device which will be used in
++    // case color transform is needed before the buffer is sent to encoder.
++    copybit_device_t* mBlitEngine;
+ };
+ 
+ // ----------------------------------------------------------------------------
+diff -ruN av/media/libmedia/AudioTrack.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libmedia/AudioTrack.cpp
+--- av/media/libmedia/AudioTrack.cpp	2014-10-03 18:58:10.616876078 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libmedia/AudioTrack.cpp	2014-01-07 19:45:31.000000000 -0600
+@@ -45,6 +45,8 @@
+ 
+ #include <audio_utils/primitives.h>
+ 
++#define OBTAIN_BUFFER_WAIT_TIME (70)
++
+ namespace android {
+ // ---------------------------------------------------------------------------
+ 
+@@ -941,7 +943,7 @@
+     status_t result = NO_ERROR;
+     audio_track_cblk_t* cblk = mCblk;
+     uint32_t framesReq = audioBuffer->frameCount;
+-    uint32_t waitTimeMs = (waitCount < 0) ? cblk->bufferTimeoutMs : WAIT_PERIOD_MS;
++    uint32_t waitTimeMs = (waitCount < 0) ? cblk->bufferTimeoutMs : OBTAIN_BUFFER_WAIT_TIME;
+ 
+     audioBuffer->frameCount  = 0;
+     audioBuffer->size = 0;
+diff -ruN av/media/libmediaplayerservice/StagefrightRecorder.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp
+--- av/media/libmediaplayerservice/StagefrightRecorder.cpp	2014-10-03 18:58:10.628876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libmediaplayerservice/StagefrightRecorder.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -43,6 +43,9 @@
+ #include <camera/CameraParameters.h>
+ #include <gui/Surface.h>
+ 
++#include <utils/String8.h>
++#include <cutils/properties.h>
++
+ #include <utils/Errors.h>
+ #include <sys/types.h>
+ #include <ctype.h>
+@@ -52,6 +55,8 @@
+ 
+ #include "ARTPWriter.h"
+ 
++#define DEFAULT_VIDEO_ENCODER "ro.default.video.encoder"
++
+ namespace android {
+ 
+ // To collect the encoder usage for the battery app
+@@ -170,8 +175,16 @@
+         return BAD_VALUE;
+     }
+ 
++    // Read DEFAULT_VIDEO_ENCODER and set the default video encoder
++    video_encoder defaultEncoder = VIDEO_ENCODER_H263;
++    char value[PROPERTY_VALUE_MAX];
++    property_get(DEFAULT_VIDEO_ENCODER, value, "");
++    if (strncmp(value, "h264", 4) == 0) {
++        defaultEncoder = VIDEO_ENCODER_H264;
++    }
++
+     if (ve == VIDEO_ENCODER_DEFAULT) {
+-        mVideoEncoder = VIDEO_ENCODER_H263;
++        mVideoEncoder = defaultEncoder;
+     } else {
+         mVideoEncoder = ve;
+     }
+diff -ruN av/media/libstagefright/ACodec.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/ACodec.cpp
+--- av/media/libstagefright/ACodec.cpp	2014-10-03 18:58:10.636876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/ACodec.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -503,7 +503,7 @@
+             mNativeWindow.get(),
+             def.format.video.nFrameWidth,
+             def.format.video.nFrameHeight,
+-            def.format.video.eColorFormat);
++            OMXCodec::OmxToHALFormat(def.format.video.eColorFormat));
+ 
+     if (err != 0) {
+         ALOGE("native_window_set_buffers_geometry failed: %s (%d)",
+@@ -776,6 +776,8 @@
+             "audio_decoder.amrwb", "audio_encoder.amrwb" },
+         { MEDIA_MIMETYPE_AUDIO_AAC,
+             "audio_decoder.aac", "audio_encoder.aac" },
++        { MEDIA_MIMETYPE_AUDIO_AAC_ELD,
++            "audio_decoder.aeld", "audio_encoder.aeld" },
+         { MEDIA_MIMETYPE_AUDIO_VORBIS,
+             "audio_decoder.vorbis", "audio_encoder.vorbis" },
+         { MEDIA_MIMETYPE_AUDIO_G711_MLAW,
+@@ -872,7 +874,8 @@
+                 err = setupVideoDecoder(mime, width, height);
+             }
+         }
+-    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)) {
++    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)
++           || !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC_ELD)) {
+         int32_t numChannels, sampleRate;
+         if (!msg->findInt32("channel-count", &numChannels)
+                 || !msg->findInt32("sample-rate", &sampleRate)) {
+@@ -955,6 +958,12 @@
+         err = setMinBufferSize(kPortIndexInput, (size_t)maxInputSize);
+     } else if (!strcmp("OMX.Nvidia.aac.decoder", mComponentName.c_str())) {
+         err = setMinBufferSize(kPortIndexInput, 8192);  // XXX
++    } else if (!strncasecmp(mime, "video/", 6)) {
++        int32_t width, height;
++        CHECK(msg->findInt32("width", &width));
++        CHECK(msg->findInt32("height", &height));
++
++        err = setMinBufferSize(kPortIndexInput, (size_t)(width * height));
+     }
+ 
+     return err;
+@@ -1357,7 +1366,8 @@
+            || format.eColorFormat == OMX_COLOR_FormatYUV420SemiPlanar
+            || format.eColorFormat == OMX_COLOR_FormatCbYCrY
+            || format.eColorFormat == OMX_TI_COLOR_FormatYUV420PackedSemiPlanar
+-           || format.eColorFormat == OMX_QCOM_COLOR_FormatYVU420SemiPlanar);
++           || format.eColorFormat == OMX_QCOM_COLOR_FormatYVU420SemiPlanar
++           || format.eColorFormat == OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB);
+ 
+     return mOMX->setParameter(
+             mNode, OMX_IndexParamVideoPortFormat,
+diff -ruN av/media/libstagefright/Android.mk /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/Android.mk
+--- av/media/libstagefright/Android.mk	2014-10-03 18:58:10.636876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/Android.mk	2014-01-07 19:45:30.000000000 -0600
+@@ -9,8 +9,10 @@
+         AACWriter.cpp                     \
+         AMRExtractor.cpp                  \
+         AMRWriter.cpp                     \
++        ASFExtractor.cpp                  \
+         AudioPlayer.cpp                   \
+         AudioSource.cpp                   \
++        AVIExtractor.cpp                  \
+         AwesomePlayer.cpp                 \
+         CameraSource.cpp                  \
+         CameraSourceTimeLapse.cpp         \
+@@ -18,6 +20,7 @@
+         DRMExtractor.cpp                  \
+         ESDS.cpp                          \
+         FileSource.cpp                    \
++        FMRadioSource.cpp                 \
+         FLACExtractor.cpp                 \
+         HTTPBase.cpp                      \
+         JPEGSource.cpp                    \
+@@ -34,10 +37,12 @@
+         MediaSource.cpp                   \
+         MetaData.cpp                      \
+         NuCachedSource2.cpp               \
++        NuCachedFileSource2.cpp           \
+         NuMediaExtractor.cpp              \
+         OMXClient.cpp                     \
+         OMXCodec.cpp                      \
+         OggExtractor.cpp                  \
++        PCMExtractor.cpp                  \
+         SampleIterator.cpp                \
+         SampleTable.cpp                   \
+         SkipCutBuffer.cpp                 \
+@@ -62,6 +67,7 @@
+         $(TOP)/external/flac/include \
+         $(TOP)/external/tremolo \
+         $(TOP)/external/openssl/include \
++        $(TOP)/vendor/st-ericsson/external/ASF_Library/include \
+ 
+ LOCAL_SHARED_LIBRARIES := \
+         libbinder \
+@@ -85,6 +91,7 @@
+         libutils \
+         libvorbisidec \
+         libz \
++        libhardware \
+ 
+ LOCAL_STATIC_LIBRARIES := \
+         libstagefright_color_conversion \
+diff -ruN av/media/libstagefright/ASFExtractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/ASFExtractor.cpp
+--- av/media/libstagefright/ASFExtractor.cpp	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/ASFExtractor.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,853 @@
++/*
++ * Copyright (C) 2011 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++//#define LOG_NDEBUG 0
++#define LOG_TAG "ASFExtractor"
++#include <utils/Log.h>
++#include <stdio.h>
++
++#include <binder/ProcessState.h>
++#include <media/stagefright/foundation/hexdump.h>
++#include <media/stagefright/foundation/ABuffer.h>
++#include <media/stagefright/foundation/ADebug.h>
++#include <media/stagefright/DataSource.h>
++#include <media/stagefright/MediaBuffer.h>
++#include <media/stagefright/MediaBufferGroup.h>
++#include <media/stagefright/MediaDefs.h>
++#include <media/stagefright/MediaErrors.h>
++#include <media/stagefright/MetaData.h>
++#include <media/stagefright/Utils.h>
++
++#include "include/ASFExtractor.h"
++#include "asfint.h"
++#include <dlfcn.h>
++
++static int32_t asfFileioReadCbSf(void *iostream,  void *buffer, int32_t size);
++static int64_t asfFileioSeekCbSf(void *asf_file, int64_t requiredBitStreamPostion);
++
++namespace android {
++
++static const int32_t kSizeOfVC1Info = 20;
++static const int32_t kSizeOfBitmapInfoHeader = 40;
++static const int32_t kSizeOfWaveFormatEx = 18;
++static const int32_t kSizeOfFrameHeader = 4;
++
++struct ASFExtractor::ASFSource : public MediaSource {
++    ASFSource(const sp<ASFExtractor> &extractor, size_t trackIndex);
++
++    virtual status_t start(MetaData *params);
++    virtual status_t stop();
++
++    virtual sp<MetaData> getFormat();
++
++    virtual status_t read(
++            MediaBuffer **buffer, const ReadOptions *options);
++
++protected:
++    virtual ~ASFSource();
++
++private:
++    status_t getFirstPacket();
++    status_t seekToClosestPosition(int64_t seekTimeUs, MediaSource::ReadOptions::SeekMode mode);
++
++    sp<ASFExtractor> mExtractor;
++    size_t mTrackIndex;
++    const ASFExtractor::Track &mTrack;
++    MediaBufferGroup *mBufferGroup;
++    size_t mSampleIndex;
++    asf_stream_type_t mStreamNum;
++    int32_t mPayloadIndex;
++    bool mEndOfStream;
++    bool mIsFirstPacket;
++    int64_t mTrackTimeStamp;
++    int64_t mLastFilePosition;
++    asf_packet_t *mPacket;
++    int64_t mAccumalatedSize;
++    TrackTypes mStreamType;
++
++    DISALLOW_EVIL_CONSTRUCTORS(ASFSource);
++};
++
++ASFExtractor::ASFSource::ASFSource(
++    const sp<ASFExtractor> &extractor, size_t trackIndex)
++    : mExtractor(extractor),
++      mTrackIndex(trackIndex),
++      mTrack(mExtractor->mTracks.itemAt(trackIndex)),
++      mBufferGroup(NULL) {
++    mStreamNum = mTrack.mStreamNumber;
++    if (mTrack.mKind == Track::AUDIO) {
++        mStreamType = AUDIO_TRACK;
++    } else if (mTrack.mKind == Track::VIDEO) {
++        mStreamType = VIDEO_TRACK;
++    }
++
++    mPayloadIndex = 0;
++    mEndOfStream = false;
++    mIsFirstPacket = true;
++    mTrackTimeStamp = 0;
++    mLastFilePosition = 0;
++    mAccumalatedSize = 0;
++    mPacket = NULL;
++    mPacket = (*(mExtractor->libasf_packet_create))();
++}
++
++ASFExtractor::ASFSource::~ASFSource() {
++    if (mBufferGroup) {
++        stop();
++    }
++
++    if (NULL != mPacket) {
++        (*(mExtractor->libasf_packet_destroy))(mPacket);
++    }
++}
++
++status_t ASFExtractor::ASFSource::start(MetaData *params) {
++    CHECK(!mBufferGroup);
++
++    mBufferGroup = new MediaBufferGroup;
++    mBufferGroup->add_buffer(new MediaBuffer(mTrack.mMaxSampleSize));
++    mBufferGroup->add_buffer(new MediaBuffer(mTrack.mMaxSampleSize));
++    mSampleIndex = 0;
++
++    const char *mime;
++    CHECK(mTrack.mMeta->findCString(kKeyMIMEType, &mime));
++    return OK;
++}
++
++status_t ASFExtractor::ASFSource::stop() {
++    CHECK(mBufferGroup);
++
++    delete mBufferGroup;
++    mBufferGroup = NULL;
++    return OK;
++}
++
++sp<MetaData> ASFExtractor::ASFSource::getFormat() {
++    return mTrack.mMeta;
++}
++
++////////////////////////////////////////////////////////
++// Read the packet from the stream when read() is called
++// for the first time
++status_t ASFExtractor::ASFSource::getFirstPacket() {
++    status_t err;
++
++    // Retrieve the first packet for the specific Track
++    do {
++        // Read the packet from the current file position
++        err = mExtractor->getPacket(mExtractor->mFileHandle, this->mPacket);
++        if (err != OK) {
++            return ERROR_END_OF_STREAM;
++        }
++
++        // Search for the specific payload within the Data Packet
++        for (int32_t i = 0; i < this->mPacket->payload_count; i++) {
++            if (this->mPacket->payloads[i].stream_number == this->mStreamNum
++                                                     && this->mIsFirstPacket) {
++                this->mIsFirstPacket = false;
++                this->mPayloadIndex = i;
++            }
++        }
++
++    } while (this->mIsFirstPacket);
++
++    return OK;
++}
++
++//////////////////////////////////////////////////////////
++// This implementation handles 3 different seek modes and
++// SEEK_CLOSEST_SYNC is the default
++status_t ASFExtractor::ASFSource::seekToClosestPosition
++            (int64_t seekTimeUs, MediaSource::ReadOptions::SeekMode mode) {
++    status_t err;
++    int32_t  prevKeyIdx;
++    int64_t  prevKeyDataPosition;
++    int64_t  prevKeytimeUs;
++    int32_t  nextKeyIdx;
++    bool     isPrevKeyFound, isNextKeyFound;
++    int64_t  nextKeyDataPosition;
++    int64_t  nextKeytimeUs;
++    int64_t  finalKeytimeUs;
++    int64_t  currentOffsetPosn;
++    int64_t  finalOffsetPosn;
++    int32_t  finalKeyIdx;
++    bool     iskeyCheckNotRequired = false;
++
++    // Initializations
++    prevKeyIdx = nextKeyIdx = 0;
++    prevKeyDataPosition = nextKeyDataPosition = mExtractor->mFileHandle->iostream.bit_stream_position;
++    prevKeytimeUs = nextKeytimeUs = finalKeytimeUs = seekTimeUs;
++    isPrevKeyFound = isNextKeyFound = false;
++    finalOffsetPosn = mExtractor->mFileHandle->iostream.bit_stream_position;
++    finalKeyIdx = 0;
++
++    ALOGV("ASFSource::seekToClosestPosition: ENTRY");
++    if (mStreamType == AUDIO_TRACK) {
++        iskeyCheckNotRequired = true;
++    }
++
++    // Retrieve the first packet for the specific Track
++    do {
++        // Read the current offset position inside the file
++        currentOffsetPosn = mExtractor->mFileHandle->iostream.bit_stream_position;
++
++        // Read the packet from the current file position
++        err = mExtractor->getPacket(mExtractor->mFileHandle, this->mPacket);
++        if (err != OK) {
++            break;
++        }
++
++        // Search for the specific payload within the Data Packet
++        for (int32_t i = 0; i < this->mPacket->payload_count; i++) {
++            if (this->mPacket->payloads[i].stream_number == this->mStreamNum &&
++                    (this->mPacket->payloads[i].key_frame || iskeyCheckNotRequired)) {
++                if (this->mPacket->payloads[i].pts * 1000 != prevKeytimeUs &&
++                        this->mPacket->payloads[i].pts * 1000 <= seekTimeUs) {
++                    // Case when the timestamp of the key frame is
++                    // less than or equal to desired timestamp
++                    prevKeyIdx = i;
++                    prevKeyDataPosition = currentOffsetPosn;
++                    prevKeytimeUs = this->mPacket->payloads[i].pts;
++                    isPrevKeyFound = true;
++                    ALOGV("Prev Sync TimeStamp: %lld, prevKeyDataPosition: %lld",
++                            prevKeytimeUs, prevKeyDataPosition);
++                } else {
++                    // Case when the timestamp is greater than requested time stamp
++                    if (!isNextKeyFound) {
++                        nextKeyIdx = i;
++                        nextKeyDataPosition = currentOffsetPosn;
++                        nextKeytimeUs = this->mPacket->payloads[i].pts;
++                        isNextKeyFound = true;
++                        ALOGV("Next Sync TimeStamp: %lld, nextKeyDataPosition: %lld",
++                                nextKeytimeUs, nextKeyDataPosition);
++                    }
++                }
++            }
++        }
++    } while (!isNextKeyFound);
++
++    if (!isNextKeyFound && !isPrevKeyFound) {
++        return ERROR_END_OF_STREAM;
++    } else if (!isNextKeyFound && isPrevKeyFound) {
++        finalOffsetPosn = prevKeyDataPosition;
++        finalKeyIdx = prevKeyIdx;
++        finalKeytimeUs  = prevKeytimeUs;
++    } else {
++
++        // The timestamps of the previous and next key frames are available
++        // The parser has to decide between the 2 timestamps
++        switch (mode) {
++            case MediaSource::ReadOptions::SEEK_CLOSEST_SYNC:
++                ALOGV("SEEK_CLOSEST_SYNC");
++                if (seekTimeUs - prevKeytimeUs < nextKeytimeUs - seekTimeUs) {
++                    if (isPrevKeyFound) {
++                        finalOffsetPosn = prevKeyDataPosition;
++                        finalKeyIdx     = prevKeyIdx;
++                        finalKeytimeUs  = prevKeytimeUs;
++                    }
++                } else {
++                    if (isNextKeyFound) {
++                        finalOffsetPosn = nextKeyDataPosition;
++                        finalKeyIdx     = nextKeyIdx;
++                        finalKeytimeUs  = nextKeytimeUs;
++                    }
++                }
++            break;
++
++            case MediaSource::ReadOptions::SEEK_PREVIOUS_SYNC:
++                ALOGV("SEEK_PREVIOUS_SYNC");
++                if (isPrevKeyFound) {
++                    finalOffsetPosn = prevKeyDataPosition;
++                    finalKeyIdx     = prevKeyIdx;
++                    finalKeytimeUs  = prevKeytimeUs;
++                }
++            break;
++
++            case MediaSource::ReadOptions::SEEK_NEXT_SYNC:
++                ALOGV("SEEK_NEXT_SYNC");
++                if (isNextKeyFound) {
++                    finalOffsetPosn = nextKeyDataPosition;
++                    finalKeyIdx     = nextKeyIdx;
++                    finalKeytimeUs  = nextKeytimeUs;
++                }
++            break;
++
++            default:
++                ALOGV("Default Case");
++                if (seekTimeUs - prevKeytimeUs < nextKeytimeUs - seekTimeUs) {
++                    if (isPrevKeyFound) {
++                        finalOffsetPosn = prevKeyDataPosition;
++                        finalKeyIdx     = prevKeyIdx;
++                        finalKeytimeUs  = prevKeytimeUs;
++                    }
++                } else {
++                    if (isNextKeyFound) {
++                        finalOffsetPosn = nextKeyDataPosition;
++                        finalKeyIdx     = nextKeyIdx;
++                        finalKeytimeUs  = nextKeytimeUs;
++                    }
++                }
++            break;
++        }
++    }
++
++    // Decide on finalOffsetPosn, finalKeyIdx
++    this->mLastFilePosition = finalOffsetPosn;
++
++    // Seek to appropriate packet and set the index
++    mExtractor->mFileHandle->iostream.seek(mExtractor->mFileHandle, this->mLastFilePosition);
++    this->mPayloadIndex = finalKeyIdx;
++    this->mTrackTimeStamp = finalKeytimeUs;
++    ALOGV("finalOffsetPosn: %lld, finalKeyIdx: %d, finalKeytimeUs: %lld",
++            finalOffsetPosn, finalKeyIdx, finalKeytimeUs);
++    err = mExtractor->getPacket(mExtractor->mFileHandle, this->mPacket);
++    if (err != OK) {
++        return ERROR_END_OF_STREAM;
++    }
++
++    ALOGV("ASFSource::seekToClosestPosition: EXIT");
++    return OK;
++}
++
++//////////////////////////////////////////////////////////////////////////
++// Read multiple data packets until we get the complete frame data.
++// Handles different cases based on the fact that the one media frame data
++// can be part of different data packets.
++status_t ASFExtractor::ASFSource::read(
++        MediaBuffer **buffer, const ReadOptions *options) {
++
++    Mutex::Autolock autoLock(mExtractor->mLock);
++    CHECK(mBufferGroup);
++
++    *buffer = NULL;
++
++    int64_t seekTimeUs;
++    int32_t lFrameSize, lKeyFrame;
++    int64_t lCurrPts;
++    status_t err;
++    bool packetFound;
++    ReadOptions::SeekMode seekMode;
++
++    if (this->mEndOfStream) {
++        return ERROR_END_OF_STREAM;
++    }
++
++    // Restore the position for the current track
++    if (this->mIsFirstPacket) {
++        this->mLastFilePosition = mExtractor->mDataPacketPosition;
++    }
++    mExtractor->mFileHandle->iostream.seek(mExtractor->mFileHandle, this->mLastFilePosition);
++
++    if (options && options->getSeekTo(&seekTimeUs, &seekMode)) {
++        // libasf works on mses
++        do {
++            err = mExtractor->getSampleIndexAtTime(mExtractor->mFileHandle, seekTimeUs / 1000);
++            if (err != OK) {
++                seekTimeUs = seekTimeUs - 1000000;
++            }
++        } while (err != OK);
++
++        this->mPayloadIndex = 0;
++        this->mAccumalatedSize = 0;
++
++        err = this->seekToClosestPosition(seekTimeUs, seekMode);
++        if (err != OK) {
++            return err;
++        }
++
++        ALOGV("Seek is successful!!!");
++        this->mIsFirstPacket = false;
++    }
++
++    // Case when the read is called for the very first packet
++    if (this->mIsFirstPacket) {
++        err = this->getFirstPacket();
++        if (err != OK) {
++            return err;
++        }
++    }
++
++    // Read the framesize, current PTS, Key frame status from Data Packet
++    lFrameSize = this->mPacket->payloads[this->mPayloadIndex].media_object_length;
++    lCurrPts = this->mPacket->payloads[this->mPayloadIndex].pts;
++    lKeyFrame = this->mPacket->payloads[this->mPayloadIndex].key_frame;
++    ALOGV("Stream No: %d, lFrameSize: %d, lCurrPts: %lld, lKeyFrame: %d",
++            (int32_t)this->mPacket->payloads[this->mPayloadIndex].stream_number,
++            lFrameSize, lCurrPts, lKeyFrame);
++
++    MediaBuffer *out;
++    CHECK_EQ(mBufferGroup->acquire_buffer(&out), (status_t)OK);
++    uint8_t *framePointer = (uint8_t *)((int32_t)out->data());
++    int32_t frameSize = lFrameSize;
++
++    //Appending Frame Header prior to frame data in case of VC1 Adv profile only
++    if (mExtractor->mIsVC1AdvancedProfile && mStreamType == VIDEO_TRACK) {
++        uint8_t frameHeader[] = {0x00, 0x00, 0x01, 0x0d};
++        memcpy(out->data(), frameHeader, kSizeOfFrameHeader);
++        framePointer = (uint8_t *)out->data() + kSizeOfFrameHeader;
++        frameSize += kSizeOfFrameHeader;
++    }
++    do {
++        // Copy Payload data to Media Buffer
++        for (int32_t i = this->mPayloadIndex; i < this->mPacket->payload_count; i++) {
++            if (this->mPacket->payloads[i].stream_number == this->mStreamNum) {
++                if (this->mPacket->payloads[i].pts != lCurrPts) {
++                    this->mPayloadIndex = i;
++                    out->set_range(0, frameSize);
++                    // Converting to ms to us
++                    out->meta_data()->setInt64(kKeyTime, lCurrPts * 1000);
++                    if (lKeyFrame) {
++                        out->meta_data()->setInt32(kKeyIsSyncFrame, 1);
++                    }
++                    *buffer = out;
++
++                    this->mAccumalatedSize = 0;
++                    this->mTrackTimeStamp = this->mPacket->payloads[this->mPayloadIndex].pts;
++
++                    // Save the file position for the current trackbefore we exit from the loop
++                    this->mLastFilePosition = mExtractor->mFileHandle->iostream.bit_stream_position;
++                    return OK;
++                }
++                memcpy(framePointer + this->mAccumalatedSize,
++                        this->mPacket->payloads[i].data, this->mPacket->payloads[i].datalen);
++                this->mAccumalatedSize += this->mPacket->payloads[i].datalen;
++            }
++        }
++
++        // Read the next payload
++        packetFound = false;
++        do {
++            err = mExtractor->getPacket(mExtractor->mFileHandle, this->mPacket);
++            if (err != OK) {
++                this->mEndOfStream = true;
++                out->release();
++                out = NULL;
++                ALOGV("getPacket is failed in read Implementation, Media Buffer release is done!!!");
++                return ERROR_END_OF_STREAM;
++            }
++
++            for (int32_t i = 0; i < this->mPacket->payload_count; i++) {
++                if (this->mPacket->payloads[i].stream_number == this->mStreamNum &&
++                        !packetFound) {
++                    packetFound = true;
++                    this->mPayloadIndex = i;
++                }
++            }
++        } while (!packetFound);
++    } while (this->mAccumalatedSize < lFrameSize);
++
++    out->set_range(0, frameSize);
++    // Converting to ms to us
++    out->meta_data()->setInt64(kKeyTime, lCurrPts * 1000);
++    if (lKeyFrame) {
++        out->meta_data()->setInt32(kKeyIsSyncFrame, 1);
++    }
++    *buffer = out;
++
++    // Reset the frame statistics
++    this->mAccumalatedSize = 0;
++    // Save the file position for the current trackbefore we exit from the loop
++    this->mLastFilePosition = mExtractor->mFileHandle->iostream.bit_stream_position;
++    ALOGV("EXIT 2: Fragmented Frame Completed for %lld, mLastFilePosition: %lld",
++            lCurrPts, this->mLastFilePosition);
++    return OK;
++}
++
++ASFExtractor::ASFExtractor(const sp<DataSource> &dataSource)
++   : mDataSource(dataSource), mFileHandle(NULL), mIsVC1AdvancedProfile(false){
++     mInitCheck = parseHeaders();
++
++    if (mInitCheck != OK) {
++        mTracks.clear();
++    }
++}
++
++ASFExtractor::~ASFExtractor() {
++    (*libasf_close)(mFileHandle);
++    dlclose(mLibAsfHandle);
++}
++
++size_t ASFExtractor::countTracks() {
++    return mTracks.size();
++}
++
++sp<MediaSource> ASFExtractor::getTrack(size_t index) {
++    return index < mTracks.size() ? new ASFSource(this, index) : NULL;
++}
++
++sp<MetaData> ASFExtractor::getTrackMetaData(
++        size_t index, uint32_t flags) {
++    return index < mTracks.size() ? mTracks.editItemAt(index).mMeta : NULL;
++}
++
++sp<MetaData> ASFExtractor::getMetaData() {
++    sp<MetaData> meta = new MetaData;
++
++    if (mInitCheck == OK) {
++        meta->setCString(kKeyMIMEType, MEDIA_MIMETYPE_CONTAINER_ASF);
++    }
++
++    return meta;
++}
++
++int32_t asfFileioReadCbSf(void *iostream, void *buffer, int32_t size) {
++    asf_iostream_t *lIostream;
++
++    // Get the ASF Extractor object
++    lIostream = (asf_iostream_t *)iostream;
++    ASFExtractor *pExtractor = (ASFExtractor *)(lIostream->data_source_handle);
++
++    ssize_t bytesRead = pExtractor->mDataSource->readAt(lIostream->bit_stream_position, buffer, size);
++
++    if (bytesRead < (ssize_t)size) {
++        return ERROR_MALFORMED;
++    }
++    lIostream->bit_stream_position += size;
++    return bytesRead;
++}
++
++int64_t asfFileioSeekCbSf(void *asf_file, int64_t requiredBitStreamPostion) {
++    asf_file_t *lASFFile;
++
++    lASFFile = (asf_file_t *)asf_file;
++    lASFFile->iostream.bit_stream_position = requiredBitStreamPostion;
++    return 0;
++}
++
++asf_file_t* ASFExtractor::asfOpenConfigure() {
++    asf_file_t *file;
++    asf_iostream_t stream;
++
++    stream.read = asfFileioReadCbSf;
++    stream.seek = asfFileioSeekCbSf;
++    stream.write = NULL;
++    stream.opaque = NULL;
++
++    file = asfOpenCb(&stream);
++    if (file == NULL) {
++        return NULL;
++    }
++
++    return file;
++}
++
++asf_file_t* ASFExtractor::asfOpenCb(asf_iostream_t *iostream) {
++    asf_file_t *file;
++    int i;
++    if (iostream == NULL)
++        return NULL;
++
++    file = (asf_file_t *)calloc(1, sizeof(asf_file_t));
++    if (file == NULL) {
++        return NULL;
++    }
++
++    file->filename = NULL;
++    file->iostream.read = iostream->read;
++    file->iostream.write = iostream->write;
++    file->iostream.seek = iostream->seek;
++    file->iostream.opaque = iostream->opaque;
++    file->iostream.bit_stream_position = 0;
++
++    file->header = NULL;
++    file->data = NULL;
++    file->index = NULL;
++
++    for (i = 0; i < ASF_MAX_STREAMS; i++) {
++        file->streams[i].type = ASF_STREAM_TYPE_NONE;
++        file->streams[i].flags = ASF_STREAM_FLAG_NONE;
++        file->streams[i].properties = NULL;
++        file->streams[i].extended_properties = NULL;
++    }
++
++    return file;
++}
++
++/////////////////////////////////////////////////////////////////////
++// This function has implementation of 'dynamic linking' to libasf.so
++// from Android Multimedia Framework.
++// Parse the stream for headers using libasf implementations.
++// Formation of Media Tracks based on stream types and pushing the
++// same into track list.
++// Formation of codec specific data:
++// BITMAPINFOHEADER for VC-1 codec
++// WAVEFORMATEXT for wma codec
++
++status_t ASFExtractor::parseHeaders() {
++    bool isAudioTrackFound = false, isVideoTrackFound = false;
++
++    mLibAsfHandle = dlopen("/system/lib/libasf.so", RTLD_NOW);
++    if (mLibAsfHandle == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    libasf_init = (asf_init_function)(dlsym(mLibAsfHandle, "asf_init"));
++    if (libasf_init == NULL) {
++        ALOGV("dlopen of libasf.so is failed!!!");
++        return ERROR_MALFORMED;
++    }
++
++    libasf_get_packet = (asf_get_packet_function)(dlsym(mLibAsfHandle, "asf_get_packet"));
++    if (libasf_get_packet == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    libasf_get_stream = (asf_get_stream_function)(dlsym(mLibAsfHandle, "asf_get_stream"));
++    if (libasf_get_stream == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    libasf_packet_create = (asf_packet_create_function)(dlsym(mLibAsfHandle, "asf_packet_create"));
++    if (libasf_packet_create == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    libasf_packet_destroy = (asf_packet_destroy_function)(dlsym(mLibAsfHandle, "asf_packet_destroy"));
++    if (libasf_packet_destroy == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    libasf_seek_to_msec = (asf_seek_to_msec_function)(dlsym(mLibAsfHandle, "asf_seek_to_msec"));
++    if (libasf_seek_to_msec == NULL) {
++        return ERROR_MALFORMED;
++    }
++    libasf_close = (asf_close_function)(dlsym(mLibAsfHandle, "asf_close"));
++    if (libasf_close == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    mTracks.clear();
++    mFileHandle = asfOpenConfigure();
++    if (mFileHandle == NULL) {
++        return ERROR_MALFORMED;
++    }
++
++    // Initialize the data handle
++    mFileHandle->iostream.data_source_handle = (int)(this);
++
++    ssize_t res = (*libasf_init)(mFileHandle);
++    if (res < 0) {
++        return ERROR_MALFORMED;
++    }
++
++    ALOGV("Stream Size: %lld", mFileHandle->file_size);
++    asf_stream_t *stream = NULL;
++
++    for (int i = 0; i < ASF_MAX_STREAMS; i++) {
++        stream = (*libasf_get_stream)(mFileHandle, i);
++        if (stream == NULL) {
++            return ERROR_MALFORMED;
++        }
++
++        Track::Kind kind = Track::OTHER;
++
++        if (stream->type == ASF_STREAM_TYPE_AUDIO) {
++            ALOGV("Audio Track Found");
++            sp<MetaData> meta = new MetaData;
++            kind = Track::AUDIO;
++            asf_waveformatex_t *wav = (asf_waveformatex_t *)stream->properties;
++            const char *mime = NULL;
++            mime = MEDIA_MIMETYPE_AUDIO_WMA;
++            meta->setCString(kKeyMIMEType, mime);
++            meta->setInt32(kKeyChannelCount, wav->nChannels);
++            meta->setInt32(kKeySampleRate, wav->nSamplesPerSec);
++            addWMACodecSpecificData(wav, meta);
++            int64_t durationUs;
++            durationUs = mFileHandle->play_duration / 10;
++            ALOGV("Audio Track duration = %.2f secs", durationUs / 1E6);
++            meta->setInt64(kKeyDuration, durationUs);
++            mTracks.push();
++
++            Track *track = &mTracks.editItemAt(mTracks.size() - 1);
++            track->mMeta = meta;
++            track->mKind = kind;
++            track->mNumSyncSamples = 0;
++            track->mThumbnailSampleSize = 0;
++            track->mThumbnailSampleIndex = -1;
++            track->mAvgChunkSize = 1.0;
++            track->mFirstChunkSize = 0;
++            track->mMaxSampleSize = 65536;
++            track->mStreamNumber = (asf_stream_type_t)i;
++            isAudioTrackFound = true;
++        } else if (stream->type == ASF_STREAM_TYPE_VIDEO) {
++            ALOGV("Video Track Found");
++            sp<MetaData> meta = new MetaData;
++            kind = Track::VIDEO;
++            asf_bitmapinfoheader_t *bmp = (asf_bitmapinfoheader_t *)stream->properties;
++            const char *mime = NULL;
++            mime = MEDIA_MIMETYPE_VIDEO_VC1;
++            meta->setCString(kKeyMIMEType, mime);
++            status_t err = addVC1CodecSpecificData(bmp, meta);
++            if (err != OK) {
++                return ERROR_MALFORMED;
++            }
++            int64_t durationUs;
++            durationUs = mFileHandle->play_duration / 10;
++            ALOGE("Track duration = %lld us %.2f secs", durationUs, durationUs / 1E6);
++            meta->setInt64(kKeyDuration, durationUs);
++
++            mTracks.push();
++            Track *track = &mTracks.editItemAt(mTracks.size() - 1);
++            track->mMeta = meta;
++            track->mKind = kind;
++            track->mNumSyncSamples = 0;
++            track->mThumbnailSampleSize = 0;
++            track->mThumbnailSampleIndex = -1;
++
++            if (NULL != stream->extended_properties) {
++                track->mMaxSampleSize = stream->extended_properties->max_obj_size;
++            } else {
++                size_t lInputBufferSize = (bmp->biWidth * bmp->biHeight * 3) >> 1;
++                track->mMaxSampleSize = lInputBufferSize;
++            }
++
++            if (mIsVC1AdvancedProfile) {
++                track->mMaxSampleSize += kSizeOfFrameHeader;
++            }
++
++            track->mAvgChunkSize = 1.0;
++            track->mFirstChunkSize = 0;
++            track->mStreamNumber = (asf_stream_type_t)i;
++            isVideoTrackFound = true;
++        }
++
++        if (isVideoTrackFound && isAudioTrackFound) {
++            break;
++        }
++    }
++
++    mDataPacketPosition = mFileHandle->position;
++    return OK;
++}
++
++status_t ASFExtractor::getSampleIndexAtTime(asf_file_t *fileHandle, int64_t timeUs) {
++    if (NULL == fileHandle) {
++        return ERROR_MALFORMED;
++    }
++
++    status_t err = (*libasf_seek_to_msec)(fileHandle, timeUs);
++    if (err < 0) {
++        ALOGV("ASF file Seek Failed");
++        return ERROR_MALFORMED;
++    }
++
++    return OK;
++}
++
++status_t ASFExtractor::getPacket(asf_file_t *mFileHandle, asf_packet_t *mPacket) {
++    int32_t err;
++    err = (*libasf_get_packet)(mFileHandle, mPacket);
++    if (err < 0) {
++        ALOGV("ASF Get data packet Failed");
++        return ERROR_MALFORMED;
++    }
++
++    return OK;
++}
++
++///////////////////////////////////////////////////////////////////
++// For VC-1 Simple (0x0) and Main Profiles (0x4) populate
++// STRUCT_C(Sc) and STRUCT_A(Sa) information packed as shown below
++// 20 Bytes of header info:
++// 00  00  00  00  00  00  00  00
++// Sc0 Sc1 Sc2 Sc3 Sa0 Sa1 Sa2 Sa3
++// Sa4 Sa5 Sa6 Sa7
++//
++// VC-1 Advanced Profile:
++// If FourCC is WVC1, Concatenating Sequence Header Data and Entry Point Header Data,
++// Passing the same as Codec Specific Data to Underlying decoder
++status_t ASFExtractor::addVC1CodecSpecificData(asf_bitmapinfoheader_t *bmp, sp<MetaData> meta) {
++    uint32_t width, height;
++    uint32_t fourCC = U32_AT((uint8_t *)&bmp->biCompression);
++
++    width  = bmp->biWidth;
++    height = bmp->biHeight;
++    meta->setInt32(kKeyWidth, width);
++    meta->setInt32(kKeyHeight, height);
++
++    // fourCC is WMV3 for VC-1 Simple/Main Profile streams
++    if (fourCC == FOURCC('W', 'M', 'V', '3') || fourCC == FOURCC('w', 'm', 'v', '3')) {
++        ALOGV("VC-1 Simple/Main Profile");
++
++        uint8_t extraData[kSizeOfVC1Info];
++        memset(extraData,0,kSizeOfVC1Info);
++
++        if (bmp->biSize - ASF_BITMAPINFOHEADER_SIZE < 4) {
++            return ERROR_MALFORMED;
++        }
++
++        // Copying 4 bytes of extra data
++        for (int i = 0; i < 4 ; i++) {
++            extraData[i + 8] = bmp->data[i];
++        }
++
++        int32_t height_le = U32LE_AT((uint8_t *)&height);
++        memcpy(&extraData[12], &height_le, 4);
++        int32_t width_le = U32LE_AT((uint8_t *)&width);
++        memcpy(&extraData[16], &width_le, 4);
++
++        meta->setData(kKeyVC1Info, kTypeVC1, extraData, kSizeOfVC1Info);
++    } else if (fourCC == FOURCC('W', 'V', 'C', '1') || fourCC == FOURCC('w', 'v', 'c', '1')) {
++        ALOGV("VC-1 Advanced Profile");
++        mIsVC1AdvancedProfile = true;
++        // Total size of Sequence Header and Entry Point header:
++        // Subtracting 40 bytes of BITMAPINFOHEADER & One byte for ASF Binding byte
++        // from 'Format Data Size'
++        int32_t codecSpecificDataSize = bmp->biSize - kSizeOfBitmapInfoHeader - 1;
++        meta->setData(kKeyVC1Info, kTypeVC1, bmp->data + 1, codecSpecificDataSize);
++    }
++
++    return OK;
++}
++
++////////////////////////////////////////////////////////////////////
++// Formation of codec specific data of wma decoder:
++// Memcpy of bitmapinfoheader fields followed by header info into a
++// single buffer.
++status_t ASFExtractor::addWMACodecSpecificData(asf_waveformatex_t *wav, sp<MetaData> meta) {
++    uint8_t *waveformatex;
++
++    waveformatex = (uint8_t *)malloc(kSizeOfWaveFormatEx + wav->cbSize);
++
++    memcpy(waveformatex, wav, kSizeOfWaveFormatEx);
++    memcpy((waveformatex + kSizeOfWaveFormatEx), wav->data, wav->cbSize);
++
++    meta->setData(kKeyWMAInfo, kTypeWMA, waveformatex, kSizeOfWaveFormatEx + wav->cbSize);
++    free(waveformatex);
++    return OK;
++}
++
++bool SniffASF(
++        const sp<DataSource> &source, String8 *mimeType, float *confidence,
++        sp<AMessage> *) {
++    char tmp[16];
++    // GUID of ASF Header Object
++    char ASF_Header_Object[16] = {0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11,
++                                  0xa6, 0xd9, 0x00, 0xaa, 0x00, 0x62, 0xce, 0x6c };
++    if (source->readAt(0, tmp, 16) < 16) {
++        return false;
++    }
++
++    if (!memcmp(tmp, ASF_Header_Object, 16)) {
++        mimeType->setTo(MEDIA_MIMETYPE_CONTAINER_ASF);
++        *confidence = 0.7;
++        return true;
++    }
++
++    return false;
++}
++
++}
+diff -ruN av/media/libstagefright/AVIExtractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/AVIExtractor.cpp
+--- av/media/libstagefright/AVIExtractor.cpp	2014-10-03 18:57:53.312875428 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/AVIExtractor.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -35,6 +35,12 @@
+ 
+ namespace android {
+ 
++static const int32_t kSizeOfVC1Info = 20;
++static const int32_t kSizeOfVC1ExtraData = 4;
++static const int32_t kSizeOfBitmapInfoHeader = 40;
++static const int32_t kSizeOfFrameHeader = 4;
++static const uint32_t kVC1FrameHeader = 0x0000010d;
++
+ struct AVIExtractor::AVISource : public MediaSource {
+     AVISource(const sp<AVIExtractor> &extractor, size_t trackIndex);
+ 
+@@ -182,17 +188,46 @@
+             return ERROR_END_OF_STREAM;
+         }
+ 
++        ssize_t n;
+         MediaBuffer *out;
+         CHECK_EQ(mBufferGroup->acquire_buffer(&out), (status_t)OK);
++        if (!mExtractor->mIsVC1AdvancedProfile) {
++            n = mExtractor->mDataSource->readAt(offset, out->data(), size);
++            out->set_range(0, size);
++        } else {
++            uint8_t frameHeader[] = {0x00, 0x00, 0x01, 0x0d};
+ 
+-        ssize_t n = mExtractor->mDataSource->readAt(offset, out->data(), size);
++            // Define a pointer which is at an offset of frame header size
++            // from the starting of the buffer
++            uint8_t *pData = (uint8_t *)out->data() + kSizeOfFrameHeader;
++
++            // Read the data from the DataSource at the appointed location
++            n = mExtractor->mDataSource->readAt(offset, pData, size);
++
++            // Copy the frameheader to the starting address of the buffer
++            memcpy(out->data(), frameHeader, kSizeOfFrameHeader);
++
++            // Set the appropriate buffer ranges inclusive of frame header size
++            uint32_t startCode;
++            startCode = (pData[0] << 16) | (pData[1] << 8) | pData[2];
++            if (startCode == 0x000001) {
++                uint32_t frameStartCode = 0;
++                int32_t index = 0;
++                while (frameStartCode != kVC1FrameHeader && index < size - 3) {
++                       frameStartCode = (pData[index] << 24) | (pData[index + 1] << 16)
++                                | (pData[index + 2] << 8) | pData[index + 3];
++                       index++;
++                 }
++                 out->set_range(index - 1 + kSizeOfFrameHeader, size - (index - 1));
++            } else {
++                 out->set_range(0, size + kSizeOfFrameHeader);
++            }
++        }
+ 
+         if (n < (ssize_t)size) {
+             return n < 0 ? (status_t)n : (status_t)ERROR_MALFORMED;
+         }
+ 
+-        out->set_range(0, size);
+-
+         out->meta_data()->setInt64(kKeyTime, timeUs);
+ 
+         if (isKey) {
+@@ -366,7 +401,9 @@
+ ////////////////////////////////////////////////////////////////////////////////
+ 
+ AVIExtractor::AVIExtractor(const sp<DataSource> &dataSource)
+-    : mDataSource(dataSource) {
++    : mIsVC1SimpleProfile(false),
++      mIsVC1AdvancedProfile(false),
++      mDataSource(dataSource) {
+     mInitCheck = parseHeaders();
+ 
+     if (mInitCheck != OK) {
+@@ -581,6 +618,12 @@
+         case FOURCC('v', 's', 's', 'h'):
+             return MEDIA_MIMETYPE_VIDEO_AVC;
+ 
++        case FOURCC('w', 'm', 'v', '3'):
++        case FOURCC('W', 'M', 'V', '3'):
++        case FOURCC('w', 'v', 'c', '1'):
++        case FOURCC('W', 'V', 'C', '1'):
++            return MEDIA_MIMETYPE_VIDEO_VC1;
++
+         default:
+             return NULL;
+     }
+@@ -620,6 +663,17 @@
+ 
+     if (type == FOURCC('v', 'i', 'd', 's')) {
+         mime = GetMIMETypeForHandler(handler);
++        if (mime != NULL && !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VC1) &&
++                (handler == FOURCC('w', 'm', 'v', '3') ||
++                handler == FOURCC('W', 'M', 'V', '3'))) {
++            mIsVC1SimpleProfile= true;
++        }
++
++        if (mime != NULL && !strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_VC1) &&
++                (handler == FOURCC('w', 'v', 'c', '1') ||
++                handler == FOURCC('W', 'V', 'C', '1'))) {
++            mIsVC1AdvancedProfile= true;
++        }
+ 
+         if (mime && strncasecmp(mime, "video/", 6)) {
+             return ERROR_MALFORMED;
+@@ -627,10 +681,10 @@
+ 
+         if (mime == NULL) {
+             ALOGW("Unsupported video format '%c%c%c%c'",
+-                 (char)(handler >> 24),
+-                 (char)((handler >> 16) & 0xff),
+-                 (char)((handler >> 8) & 0xff),
+-                 (char)(handler & 0xff));
++                    (char)(handler >> 24),
++                    (char)((handler >> 16) & 0xff),
++                    (char)((handler >> 8) & 0xff),
++                    (char)(handler & 0xff));
+         }
+ 
+         kind = Track::VIDEO;
+@@ -698,6 +752,33 @@
+         uint32_t width = U32LE_AT(&data[4]);
+         uint32_t height = U32LE_AT(&data[8]);
+ 
++        if (mIsVC1SimpleProfile) {
++            ssize_t s = mDataSource->readAt(offset + kSizeOfBitmapInfoHeader,
++                    track->extraData, kSizeOfVC1ExtraData);
++            if (s < (ssize_t)kSizeOfVC1ExtraData) {
++                return s < 0 ? (status_t)s : ERROR_MALFORMED;
++            }
++        } else if (mIsVC1AdvancedProfile) { // VC1 Advanced Profile
++                // Resync to the start code from 13th Byte as we already consumed 12 bytes
++            uint32_t index = 12;
++            uint32_t startCode = 0;
++
++            while (startCode != 0x00000001 && index < size) {
++                startCode = (data[index] << 16) | (data[index + 1] << 8) | data[index + 2];
++                index++;
++            }
++            // Calculate total size of Sequence Header and Entry Point header
++            // based on strf chunk size
++            uint32_t seqHdrEntryPtHdrSize = size - index + 1;
++            offset += index - 1;
++            track->apExtraData = (uint8_t *)malloc(seqHdrEntryPtHdrSize);
++            track->apExtraDataSize = seqHdrEntryPtHdrSize;
++            ssize_t s = mDataSource->readAt(offset, track->apExtraData, seqHdrEntryPtHdrSize);
++            if (s < (ssize_t)seqHdrEntryPtHdrSize) {
++                return s < 0 ? (status_t)s : ERROR_MALFORMED;
++            }
++        }
++
+         track->mMeta->setInt32(kKeyWidth, width);
+         track->mMeta->setInt32(kKeyHeight, height);
+     } else {
+@@ -769,16 +850,18 @@
+         return ERROR_MALFORMED;
+     }
+ 
+-    sp<ABuffer> buffer = new ABuffer(size);
+-    ssize_t n = mDataSource->readAt(offset, buffer->data(), buffer->size());
+-
+-    if (n < (ssize_t)size) {
+-        return n < 0 ? (status_t)n : ERROR_MALFORMED;
+-    }
+-
++    sp<ABuffer> buffer = new ABuffer(16);
++    ssize_t n;
+     const uint8_t *data = buffer->data();
++    off64_t current_offset = offset;
+ 
+     while (size > 0) {
++        n = mDataSource->readAt(current_offset, buffer->data(), 16);
++        current_offset += 16;
++
++        if (n < 16) {
++            return ERROR_MALFORMED;
++        }
+         uint32_t chunkType = U32_AT(data);
+ 
+         uint8_t hi = chunkType >> 24;
+@@ -801,7 +884,6 @@
+         }
+ 
+         if (track->mKind == Track::OTHER) {
+-            data += 16;
+             size -= 16;
+             continue;
+         }
+@@ -837,7 +919,6 @@
+             ++track->mNumSyncSamples;
+         }
+ 
+-        data += 16;
+         size -= 16;
+     }
+ 
+@@ -877,7 +958,7 @@
+ 
+             double avgChunkSize = 0;
+             size_t j;
+-            for (j = 0; j <= numSamplesToAverage; ++j) {
++            for (j = 0; j < numSamplesToAverage; ++j) {
+                 off64_t offset;
+                 size_t size;
+                 bool isKey;
+@@ -912,6 +993,7 @@
+         ALOGV("track %d duration = %.2f secs", i, durationUs / 1E6);
+ 
+         track->mMeta->setInt64(kKeyDuration, durationUs);
++        track->mMaxSampleSize = (((track->mMaxSampleSize + 15)/16)*16) + 16;
+         track->mMeta->setInt32(kKeyMaxInputSize, track->mMaxSampleSize);
+ 
+         const char *tmp;
+@@ -935,6 +1017,8 @@
+                 err = addMPEG4CodecSpecificData(i);
+             } else if (!strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_AVC)) {
+                 err = addH264CodecSpecificData(i);
++            } else if (!strcasecmp(mime.c_str(), MEDIA_MIMETYPE_VIDEO_VC1)) {
++                err = addVC1CodecSpecificData(i);
+             }
+ 
+             if (err != OK) {
+@@ -1001,13 +1085,47 @@
+ 
+     off64_t offset;
+     size_t size;
+-    bool isKey;
+     int64_t timeUs;
+-    status_t err =
+-        getSampleInfo(trackIndex, 0, &offset, &size, &isKey, &timeUs);
++    bool isKey = false;
++    bool KeyFound = false;
++    bool NonKeyFound = false;
++    size_t sampleIndex;
++    size_t VOPIndex;
++    size_t NB_SAMPLES_MAX = 100;
++
++    for (sampleIndex = 0; sampleIndex < NB_SAMPLES_MAX; sampleIndex++) {
++        status_t err =
++            getSampleInfo(
++                trackIndex, sampleIndex, &offset, &size, &isKey, &timeUs);
+ 
+-    if (err != OK) {
+-        return err;
++        if (err != OK) {
++            return err;
++        }
++        if (size > 0) {
++            if (isKey) {
++                // exit at first key frame
++                KeyFound = true;
++                break;
++            } else {
++                if (!NonKeyFound) {
++                    // save first non-key frame in case no key frame is found
++                    VOPIndex = sampleIndex;
++                    NonKeyFound = true;
++                }
++            }
++        }
++    }
++
++    if (KeyFound) {
++        ALOGV("Extracting specific data from key frame at index=%d size=%d", sampleIndex, size);
++    } else {
++        ALOGW("No key frame found within %d samples, extracting codec-specific data from non-key frame at index = %d, size = %d", NB_SAMPLES_MAX, VOPIndex, size);
++        status_t err =
++            getSampleInfo(
++                trackIndex, VOPIndex, &offset, &size, &isKey, &timeUs);
++        if (err != OK) {
++            return err;
++        }
+     }
+ 
+     sp<ABuffer> buffer = new ABuffer(size);
+@@ -1100,6 +1218,63 @@
+ 
+     return OK;
+ }
++
++status_t AVIExtractor::addVC1CodecSpecificData(size_t trackIndex) {
++    Track *track = &mTracks.editItemAt(trackIndex);
++    uint8_t extraData[kSizeOfVC1Info];
++    int32_t width, height;
++
++    CHECK(track->mMeta->findInt32(kKeyWidth, &width));
++    CHECK(track->mMeta->findInt32(kKeyHeight, &height));
++
++    memset(extraData, 0, kSizeOfVC1Info);
++
++    /*************************************************************************************
++      * If the profile is advanced profile (0xC),                                        *
++      *            then the third byte amongst the first 8 bytes is set to 0x1           *
++      *            subsequent STRUCT_C and STRUCT_A information are ignored by decoder   *
++      * Else, for simple (0x0) and main profiles (0x4)                                   *
++      *            populate the STRUCT_C and STRUCT_A information packed as shown below  *
++      *                                                                                  *
++      *  --------------------------------------------------------                        *
++      * |      |      |      |      |      |      |      |      |                        *
++      * |  00  |  00  |  0x  |  00  |  00  |  00  |  00  |  00  |                        *
++      * |      |      |      |      |      |      |      |      |                        *
++      *  --------------------------------------------------------                        *
++      * |      |      |      |      |      |      |      |      |                        *
++      * |  Sc0 |  Sc1 |  Sc2 |  Sc3 |  Sa0 |  Sa1 | Sa2  |  Sa3 |                        *
++      * |      |      |      |      |      |      |      |      |                        *
++      *  -----------------------------------------------                                 *
++      * |      |      |      |      |      |      |      |      |                        *
++      * |  Sa4 |  Sa5 |  Sa6 |  Sa7 |      |      |      |      |                        *
++      * |      |      |      |      |      |      |      |      |                        *
++      *  --------------------------------------------------------                        *
++      ************************************************************************************
++    */
++
++    if (mIsVC1SimpleProfile) {
++        ALOGV("VC1 Simple/Main Profile");
++
++        int32_t extradata_le = U32LE_AT(track->extraData);
++        memcpy(&extraData[8], &extradata_le, 4);
++
++        int32_t height_le = U32LE_AT((uint8_t *)&height);
++        memcpy(&extraData[12], &height_le, 4);
++
++        int32_t width_le = U32LE_AT((uint8_t *)&width);
++        memcpy(&extraData[16], &width_le, 4);
++
++        //storing the extradata in the metadata to enable the accessing of the data globally
++        track->mMeta->setData(kKeyVC1Info, kTypeVC1, extraData, kSizeOfVC1Info);
++    } else if (mIsVC1AdvancedProfile) {
++        ALOGV("VC1 Advanced Profile");
++        track->mMeta->setData(kKeyVC1Info, kTypeVC1, track->apExtraData, track->apExtraDataSize);
++        track->mMaxSampleSize += kSizeOfFrameHeader;
++        free(track->apExtraData);
++    }
++
++    return OK;
++}
+ 
+ status_t AVIExtractor::getSampleInfo(
+         size_t trackIndex, size_t sampleIndex,
+diff -ruN av/media/libstagefright/AwesomePlayer.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/AwesomePlayer.cpp
+--- av/media/libstagefright/AwesomePlayer.cpp	2014-10-03 18:58:10.636876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/AwesomePlayer.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -28,6 +28,7 @@
+ #include "include/DRMExtractor.h"
+ #include "include/SoftwareRenderer.h"
+ #include "include/NuCachedSource2.h"
++#include "include/NuCachedFileSource2.h"
+ #include "include/ThrottledSource.h"
+ #include "include/MPEG2TSExtractor.h"
+ #include "include/WVMExtractor.h"
+@@ -41,6 +42,7 @@
+ #include <media/stagefright/AudioPlayer.h>
+ #include <media/stagefright/DataSource.h>
+ #include <media/stagefright/FileSource.h>
++#include <media/stagefright/FMRadioSource.h>
+ #include <media/stagefright/MediaBuffer.h>
+ #include <media/stagefright/MediaDefs.h>
+ #include <media/stagefright/MediaExtractor.h>
+@@ -305,7 +307,7 @@
+ 
+     reset_l();
+ 
+-    sp<DataSource> dataSource = new FileSource(fd, offset, length);
++    sp<DataSource> dataSource = new NuCachedFileSource2(new FileSource(fd, offset, length));
+ 
+     status_t err = dataSource->initCheck();
+ 
+@@ -1592,7 +1594,7 @@
+             mVideoBuffer = NULL;
+         }
+ 
+-        if (mSeeking == SEEK && isStreamingHTTP() && mAudioSource != NULL
++        if (mSeeking == SEEK && mAudioSource != NULL
+                 && !(mFlags & SEEK_PREVIEW)) {
+             // We're going to seek the video source first, followed by
+             // the audio source.
+@@ -2106,6 +2108,13 @@
+                 return UNKNOWN_ERROR;
+             }
+         }
++    } else if (!strncasecmp("fmradio://rx", mUri.string(), 12)) {
++        sniffedMIME = MEDIA_MIMETYPE_AUDIO_RAW;
++        dataSource = new FMRadioSource();
++        status_t err = dataSource->initCheck();
++        if (err != OK) {
++            return err;
++        }
+     } else {
+         dataSource = DataSource::CreateFromURI(mUri.string(), &mUriHeaders);
+     }
+diff -ruN av/media/libstagefright/CameraSource.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/CameraSource.cpp
+--- av/media/libstagefright/CameraSource.cpp	2014-10-03 18:58:10.636876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/CameraSource.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -103,6 +103,10 @@
+         return OMX_COLOR_FormatYCbYCr;
+     }
+ 
++    if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_UYV422I)) {
++        return OMX_COLOR_FormatCbYCrY;
++    }
++
+     if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_RGB565)) {
+        return OMX_COLOR_Format16bitRGB565;
+     }
+@@ -111,6 +115,10 @@
+        return OMX_TI_COLOR_FormatYUV420PackedSemiPlanar;
+     }
+ 
++    if (!strcmp(colorFormat, CameraParameters::PIXEL_FORMAT_YUV420MB)) {
++       return OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB;
++    }
++
+     ALOGE("Uknown color format (%s), please add it to "
+          "CameraSource::getColorFormat", colorFormat);
+ 
+@@ -539,13 +547,16 @@
+ 
+     // XXX: query camera for the stride and slice height
+     // when the capability becomes available.
++    int stride = newCameraParams.getInt(CameraParameters::KEY_RECORD_STRIDE);
++    int sliceHeight = newCameraParams.getInt(CameraParameters::KEY_RECORD_SLICE_HEIGHT);
++
+     mMeta = new MetaData;
+     mMeta->setCString(kKeyMIMEType,  MEDIA_MIMETYPE_VIDEO_RAW);
+     mMeta->setInt32(kKeyColorFormat, mColorFormat);
+     mMeta->setInt32(kKeyWidth,       mVideoSize.width);
+     mMeta->setInt32(kKeyHeight,      mVideoSize.height);
+-    mMeta->setInt32(kKeyStride,      mVideoSize.width);
+-    mMeta->setInt32(kKeySliceHeight, mVideoSize.height);
++    mMeta->setInt32(kKeyStride,      stride != -1 ? stride : mVideoSize.width);
++    mMeta->setInt32(kKeySliceHeight, sliceHeight != -1 ? sliceHeight : mVideoSize.height);
+     mMeta->setInt32(kKeyFrameRate,   mVideoFrameRate);
+     return OK;
+ }
+diff -ruN av/media/libstagefright/codecs/m4v_h263/dec/SoftMPEG4.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/codecs/m4v_h263/dec/SoftMPEG4.cpp
+--- av/media/libstagefright/codecs/m4v_h263/dec/SoftMPEG4.cpp	2014-10-03 18:58:10.892876089 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/codecs/m4v_h263/dec/SoftMPEG4.cpp	2014-01-07 19:45:28.000000000 -0600
+@@ -280,6 +280,34 @@
+             return OMX_ErrorNone;
+         }
+ 
++        case OMX_IndexParamPortDefinition:
++        {
++            if (mMode == MODE_H263) {
++                OMX_PARAM_PORTDEFINITIONTYPE *defParams =
++                    (OMX_PARAM_PORTDEFINITIONTYPE *)params;
++                OMX_VIDEO_PORTDEFINITIONTYPE *video_def = &(defParams->format.video);
++                OMX_PARAM_PORTDEFINITIONTYPE *def = NULL;
++
++                mCropLeft                      = 0;
++                mCropTop                       = 0;
++                mCropRight                     = video_def->nFrameWidth  - 1;
++                mCropBottom                    = video_def->nFrameHeight - 1;
++
++                // Input & Output is getting the same width & height
++                def                            = &editPortInfo(0)->mDef;
++                def->format.video.nFrameWidth  = video_def->nFrameWidth;
++                def->format.video.nFrameHeight = video_def->nFrameHeight;
++                def->format.video.nStride      = def->format.video.nFrameWidth;
++                def->format.video.nSliceHeight = def->format.video.nFrameHeight;
++                def                            = &editPortInfo(1)->mDef;
++                def->format.video.nFrameWidth  = video_def->nFrameWidth;
++                def->format.video.nFrameHeight = video_def->nFrameHeight;
++                def->format.video.nStride      = def->format.video.nFrameWidth;
++                def->format.video.nSliceHeight = def->format.video.nFrameHeight;
++            }
++            return SimpleSoftOMXComponent::internalSetParameter(index, params);
++        }
++
+         default:
+             return SimpleSoftOMXComponent::internalSetParameter(index, params);
+     }
+@@ -481,6 +509,14 @@
+     int32_t disp_width, disp_height;
+     PVGetVideoDimensions(mHandle, &disp_width, &disp_height);
+ 
++    if (mMode == MODE_H263) {
++        if (mCropRight != disp_width  - 1
++               || mCropBottom != disp_height - 1) {
++            disp_width  = mCropRight  + 1;
++            disp_height = mCropBottom + 1;
++        }
++    }
++
+     int32_t buf_width, buf_height;
+     PVGetBufferDimensions(mHandle, &buf_width, &buf_height);
+ 
+diff -ruN av/media/libstagefright/codecs/on2/h264dec/SoftAVC.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/codecs/on2/h264dec/SoftAVC.cpp
+--- av/media/libstagefright/codecs/on2/h264dec/SoftAVC.cpp	2014-10-03 18:58:10.900876089 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/codecs/on2/h264dec/SoftAVC.cpp	2014-01-07 19:45:29.000000000 -0600
+@@ -492,6 +492,13 @@
+             outHeader->nFilledLen = mPictureSize;
+             mPicToHeaderMap.removeItem(picId);
+             delete header;
++        } else if (mFirstPicture) {
++
++            // Sending the saved output buffer because of dynamic port reconfiguration
++            drainOneOutputBuffer(mFirstPictureId, mFirstPicture);
++            delete[] mFirstPicture;
++            mFirstPicture = NULL;
++            mFirstPictureId = -1;
+         } else {
+             outHeader->nTimeStamp = 0;
+             outHeader->nFilledLen = 0;
+diff -ruN av/media/libstagefright/colorconversion/ColorConverter.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/colorconversion/ColorConverter.cpp
+--- av/media/libstagefright/colorconversion/ColorConverter.cpp	2014-10-03 18:57:54.144875459 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/colorconversion/ColorConverter.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -47,6 +47,7 @@
+         case OMX_QCOM_COLOR_FormatYVU420SemiPlanar:
+         case OMX_COLOR_FormatYUV420SemiPlanar:
+         case OMX_TI_COLOR_FormatYUV420PackedSemiPlanar:
++        case OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB:
+             return true;
+ 
+         default:
+@@ -122,6 +123,10 @@
+             err = convertTIYUV420PackedSemiPlanar(src, dst);
+             break;
+ 
++        case OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB:
++            err = convertSTEYUV420PackedSemiPlanarMB(src, dst);
++            break;
++
+         default:
+         {
+             CHECK(!"Should not be here. Unknown color conversion.");
+@@ -504,6 +509,143 @@
+     }
+ 
+     return OK;
++}
++
++status_t ColorConverter::convertSTEYUV420PackedSemiPlanarMB(
++        const BitmapParams &src, const BitmapParams &dst) {
++
++    if (!((dst.mWidth & 1) == 0
++            && src.mCropLeft == 0
++            && src.mCropTop == 0
++            && src.cropWidth() == dst.cropWidth()
++            && src.cropHeight() == dst.cropHeight())) {
++        return ERROR_UNSUPPORTED;
++    }
++
++    OMX_U32 mx = src.mWidth / 16;
++    OMX_U32 my = src.mHeight / 16;
++    OMX_U32 lx, ly;
++    OMX_U32 *pChroma, *pLuma = (OMX_U32 *)src.mBits;
++
++    pChroma = (OMX_U32 *)src.mBits + mx * my * 64;
++    for (ly = 0; ly < my; ly++) {
++        for (lx = 0; lx < mx; lx++) {
++            OMX_U32 col, row, lumaWord, chromaWord1 = 0, rgbWord, i;
++            OMX_U8 y[4], cb[4], cr[4], r[4], g[4], b[4];
++            OMX_U32 *dstBuf, *locBuf;
++            OMX_U32 *pBurstLuma = 0, *pBurstChroma = 0;
++            OMX_U32 *pWordLuma = 0, *pWordChroma = 0;
++            OMX_U8 nbOfBlock;
++
++            dstBuf = ((OMX_U32 *)dst.mBits) + (ly * 16) * dst.mWidth / 2;
++            dstBuf += (lx * 16) / 2;
++
++            pBurstLuma = pLuma;
++            pBurstChroma = pChroma;
++
++            for (col = 0; col < 2; col++) {
++                // conversion of a macroblock
++                for (nbOfBlock = 0; nbOfBlock < 2; nbOfBlock++) {
++                    locBuf = dstBuf + 4 * col + 2 * nbOfBlock;
++                    OMX_U32 dstRowOrigo = ly * 16 * dst.mWidth;
++
++                    switch (nbOfBlock) {
++                    case 0:
++                        pWordLuma = pBurstLuma;
++                        pWordChroma = pBurstChroma;
++                        break;
++                    case 1:
++                        pWordLuma = pBurstLuma + 1;
++                        pWordChroma = pBurstChroma + 1;
++                        break;
++                    }
++                    for (row = 0; row < 16; row++) {
++
++                        // Check for cropping on the y axis
++                        if (ly * 16 + row >= dst.mHeight) {
++                            break;
++                        }
++
++                        lumaWord = *pWordLuma;
++                        pWordLuma += 2;
++                        if (row % 2 == 0) {
++                            chromaWord1 = *pWordChroma;
++                            pWordChroma += 2;
++                        }
++
++                        y[3] = ((lumaWord >> 24) & 0xff);
++                        y[2] = ((lumaWord >> 16) & 0xff);
++                        y[1] = ((lumaWord >>  8) & 0xff);
++                        y[0] = ((lumaWord >>  0) & 0xff);
++
++                        cb[0] = cb[1] = ((chromaWord1 >>  0) & 0xff);
++                        cb[2] = cb[3] = ((chromaWord1 >> 16) & 0xff);
++                        cr[0] = cr[1] = ((chromaWord1 >>  8) & 0xff);
++                        cr[2] = cr[3] = ((chromaWord1 >> 24) & 0xff);
++
++                        for (i = 0; i < 4; i++) {
++
++                            int32_t rW,gW,bW;
++
++                            rW = 298 * y[i] + 408 * cr[i] - 57059;
++                            gW = 298 * y[i] - 100 * cb[i] - 208 * cr[i] + 34713;
++                            bW = 298 * y[i] + 516 * cb[i] - 70887;
++
++                            if (rW < 0) {
++                                r[i] = 0;
++                            } else if (rW >= 65536) {
++                                r[i] = 255;
++                            } else {
++                                r[i] = (rW >> 8);
++                            }
++                            if (gW < 0) {
++                                g[i] = 0;
++                            } else if (gW >= 65536) {
++                                g[i] = 255;
++                            } else {
++                                g[i] = (gW >> 8);
++                            }
++                            if (bW < 0) {
++                                b[i] = 0;
++                            } else if (bW >= 65536) {
++                                b[i] = 255;
++                            } else {
++                                b[i] = (bW >> 8);
++                            }
++                            r[i] >>= 3;
++                            g[i] >>= 2;
++                            b[i] >>= 3;
++                        }
++                        for (i = 0; i < 4; i += 2) {
++
++                            // Check for cropping on the x axis
++                            OMX_U32 rowPos = (locBuf - (OMX_U32 *)dst.mBits) * 2 - dstRowOrigo;
++                            if (rowPos >= dst.mWidth) {
++                                locBuf++;
++                                continue;
++                            }
++
++                            rgbWord = (r[i + 1] << 27) +
++                                (g[i + 1] << 21) +
++                                (b[i + 1] << 16) +
++                                (r[i] << 11) +
++                                (g[i] << 5) +
++                                (b[i] << 0);
++                            *locBuf++ = rgbWord;
++                        }
++                        locBuf += dst.mWidth / 2 - 2;
++                        dstRowOrigo += dst.mWidth;
++                    } //end of for 16 loop
++                }  //end of 2 block loop
++                pBurstLuma += 32;
++                pBurstChroma += 16;
++            } // end of 2 col loop
++            pLuma   += 64;
++            pChroma += 32;
++        }
++    }
++
++    return OK;
+ }
+ 
+ uint8_t *ColorConverter::initClip() {
+diff -ruN av/media/libstagefright/DataSource.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/DataSource.cpp
+--- av/media/libstagefright/DataSource.cpp	2014-10-03 18:58:10.636876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/DataSource.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -20,6 +20,7 @@
+ #include "include/DataUriSource.h"
+ #endif
+ 
++#include "include/AVIExtractor.h"
+ #include "include/MP3Extractor.h"
+ #include "include/MPEG4Extractor.h"
+ #include "include/WAVExtractor.h"
+@@ -27,11 +28,13 @@
+ #include "include/MPEG2PSExtractor.h"
+ #include "include/MPEG2TSExtractor.h"
+ #include "include/NuCachedSource2.h"
++#include "include/NuCachedFileSource2.h"
+ #include "include/HTTPBase.h"
+ #include "include/DRMExtractor.h"
+ #include "include/FLACExtractor.h"
+ #include "include/AACExtractor.h"
+ #include "include/WVMExtractor.h"
++#include "include/ASFExtractor.h"
+ 
+ #include "matroska/MatroskaExtractor.h"
+ 
+@@ -120,6 +123,8 @@
+     RegisterSniffer(SniffAAC);
+     RegisterSniffer(SniffMPEG2PS);
+     RegisterSniffer(SniffWVM);
++    RegisterSniffer(SniffAVI);
++    RegisterSniffer(SniffASF);
+ 
+     char value[PROPERTY_VALUE_MAX];
+     if (property_get("drm.service.enabled", value, NULL)
+@@ -135,7 +140,7 @@
+ 
+     sp<DataSource> source;
+     if (!strncasecmp("file://", uri, 7)) {
+-        source = new FileSource(uri + 7);
++        source = new NuCachedFileSource2(new FileSource(uri + 7));
+     } else if (!strncasecmp("http://", uri, 7)
+             || !strncasecmp("https://", uri, 8)
+             || isWidevine) {
+@@ -177,13 +182,16 @@
+ #endif
+     } else {
+         // Assume it's a filename.
+-        source = new FileSource(uri);
++        source = new NuCachedFileSource2(new FileSource(uri));
+     }
+ 
+     if (source == NULL || source->initCheck() != OK) {
+         return NULL;
+     }
+ 
++    // Save uri
++    source->setCharUri(uri);
++
+     return source;
+ }
+ 
+@@ -191,4 +199,12 @@
+     return String8("application/octet-stream");
+ }
+ 
++void DataSource::setCharUri(const char* uri) {
++    mUri = String8(uri);
++}
++
++const char* DataSource::getCharUri() {
++    return mUri.string();
++}
++
+ }  // namespace android
+diff -ruN av/media/libstagefright/FMRadioSource.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/FMRadioSource.cpp
+--- av/media/libstagefright/FMRadioSource.cpp	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/FMRadioSource.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -0,0 +1,206 @@
++/*
++ * Copyright (C) ST-Ericsson SA 2012
++ * Copyright (C) 2012 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Author: Stefan Ekenberg (stefan.ekenberg@stericsson.com) for ST-Ericsson
++ */
++
++#define LOG_TAG "FMRadioSource"
++#include <utils/Log.h>
++
++#include <media/stagefright/FMRadioSource.h>
++#include <media/AudioSystem.h>
++#include <private/media/AudioTrackShared.h>
++#include <cutils/compiler.h>
++
++namespace android {
++
++static const int kSampleRate = 48000;
++static const audio_format_t kAudioFormat = AUDIO_FORMAT_PCM_16_BIT;
++static const uint32_t kChannelMask = AUDIO_CHANNEL_IN_STEREO;
++static const int kBufferTimeoutMs = 3000;
++
++FMRadioSource::FMRadioSource()
++    : mInitCheck(NO_INIT),
++      mStarted(false),
++      mSessionId(AudioSystem::newAudioSessionId()) {
++
++    // get FM Radio RX input
++    audio_in_acoustics_t flags = (audio_in_acoustics_t)
++                    (AUDIO_IN_ACOUSTICS_AGC_DISABLE |
++                     AUDIO_IN_ACOUSTICS_NS_DISABLE  |
++                     AUDIO_IN_ACOUSTICS_TX_DISABLE );
++
++    audio_io_handle_t input = AudioSystem::getInput(AUDIO_SOURCE_FM_RADIO_RX,
++                                                    kSampleRate,
++                                                    kAudioFormat,
++                                                    kChannelMask,
++                                                    (audio_in_acoustics_t)flags,
++                                                    mSessionId);
++    if (input == 0) {
++        ALOGE("Could not get audio input for FM Radio source");
++        mInitCheck = UNKNOWN_ERROR;
++        return;
++    }
++
++    // get frame count
++    int frameCount = 0;
++    status_t status = AudioRecord::getMinFrameCount(&frameCount, kSampleRate,
++                                                    kAudioFormat, popcount(kChannelMask));
++    if (status != NO_ERROR) {
++        mInitCheck = status;
++        return;
++    }
++
++    // create the IAudioRecord
++    status = openRecord(frameCount, input);
++    if (status != NO_ERROR) {
++        mInitCheck = status;
++        return;
++    }
++
++    AudioSystem::acquireAudioSessionId(mSessionId);
++
++    mInitCheck = OK;
++    return;
++}
++
++FMRadioSource::~FMRadioSource() {
++    AudioSystem::releaseAudioSessionId(mSessionId);
++}
++
++status_t FMRadioSource::initCheck() const {
++    return mInitCheck;
++}
++
++ssize_t FMRadioSource::readAt(off64_t offset, void *data, size_t size) {
++    Buffer audioBuffer;
++
++    if (!mStarted) {
++        status_t err = mAudioRecord->start(AudioSystem::SYNC_EVENT_NONE, 0);
++        if (err == OK) {
++            mStarted = true;
++        } else {
++            ALOGE("Failed to start audio source");
++            return 0;
++        }
++    }
++
++    // acquire a strong reference on the IAudioRecord and IMemory so that they cannot be destroyed
++    // while we are accessing the cblk
++    sp<IAudioRecord> audioRecord = mAudioRecord;
++    sp<IMemory> iMem = mCblkMemory;
++    audio_track_cblk_t* cblk = mCblk;
++
++    audioBuffer.frameCount = size / cblk->frameSize;
++
++    status_t err = obtainBuffer(&audioBuffer);
++    if (err != NO_ERROR) {
++        ALOGE("Error obtaining an audio buffer, giving up (err:%d).", err);
++        return 0;
++    }
++
++    memcpy(data, audioBuffer.data, audioBuffer.size);
++    mCblk->stepUser(audioBuffer.frameCount);
++
++    return audioBuffer.size;
++}
++
++status_t FMRadioSource::getSize(off64_t *size) {
++    *size = 0;
++    return OK;
++}
++
++// -------------------------------------------------------------------------
++
++status_t FMRadioSource::openRecord(int frameCount, audio_io_handle_t input)
++{
++    status_t status;
++    const sp<IAudioFlinger>& audioFlinger = AudioSystem::get_audio_flinger();
++    if (audioFlinger == 0) {
++        return NO_INIT;
++    }
++
++    sp<IAudioRecord> record = audioFlinger->openRecord(getpid(), input,
++                                                       kSampleRate,
++                                                       kAudioFormat,
++                                                       kChannelMask,
++                                                       frameCount,
++                                                       IAudioFlinger::TRACK_DEFAULT,
++                                                       &mSessionId,
++                                                       &status);
++
++    if (record == 0) {
++        ALOGE("AudioFlinger could not create record track, status: %d", status);
++        return status;
++    }
++
++    sp<IMemory> cblk = record->getCblk();
++    if (cblk == 0) {
++        ALOGE("Could not get control block");
++        return NO_INIT;
++    }
++    mAudioRecord = record;
++    mCblkMemory = cblk;
++    mCblk = static_cast<audio_track_cblk_t*>(cblk->pointer());
++    mCblk->buffers = (char*)mCblk + sizeof(audio_track_cblk_t);
++    android_atomic_and(~CBLK_DIRECTION_MSK, &mCblk->flags);
++    return NO_ERROR;
++}
++
++status_t FMRadioSource::obtainBuffer(Buffer* audioBuffer)
++{
++    status_t result = NO_ERROR;
++    uint32_t framesReq = audioBuffer->frameCount;
++
++    audioBuffer->frameCount = 0;
++    audioBuffer->size       = 0;
++
++    mCblk->lock.lock();
++    uint32_t framesReady = mCblk->framesReady();
++    if (framesReady == 0) {
++        do {
++            result = mCblk->cv.waitRelative(mCblk->lock, milliseconds(kBufferTimeoutMs));
++            if (CC_UNLIKELY(result != NO_ERROR)) {
++                ALOGE("obtainBuffer timed out (is the CPU pegged?) "
++                        "user=%08x, server=%08x", mCblk->user, mCblk->server);
++                mCblk->lock.unlock();
++                return TIMED_OUT;
++            }
++
++            framesReady = mCblk->framesReady();
++        } while (framesReady == 0);
++    }
++    mCblk->lock.unlock();
++
++    if (framesReq > framesReady) {
++        framesReq = framesReady;
++    }
++
++    uint32_t u = mCblk->user;
++    uint32_t bufferEnd = mCblk->userBase + mCblk->frameCount;
++
++    if (framesReq > bufferEnd - u) {
++        framesReq = bufferEnd - u;
++    }
++
++    audioBuffer->frameCount = framesReq;
++    audioBuffer->size       = framesReq * mCblk->frameSize;
++    audioBuffer->data       = (int8_t*)mCblk->buffer(u);
++
++    return NO_ERROR;
++}
++
++}  // namespace android
+diff -ruN av/media/libstagefright/foundation/ABitReader.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/foundation/ABitReader.cpp
+--- av/media/libstagefright/foundation/ABitReader.cpp	2014-10-03 18:57:54.148875460 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/foundation/ABitReader.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -22,7 +22,9 @@
+ 
+ ABitReader::ABitReader(const uint8_t *data, size_t size)
+     : mData(data),
++      mOriginalData(data),
+       mSize(size),
++      mOriginalSize(size),
+       mReservoir(0),
+       mNumBitsLeft(0) {
+ }
+@@ -78,6 +80,19 @@
+     }
+ }
+ 
++void ABitReader::rewindBits(size_t n) {
++    CHECK_GE(mOriginalSize * 8 - numBitsLeft(), n);
++
++    size_t bitsLeft = numBitsLeft();
++
++    mData = mOriginalData;
++    mSize = mOriginalSize;
++    mReservoir = 0;
++    mNumBitsLeft = 0;
++
++    skipBits(mOriginalSize * 8 - bitsLeft - n);
++}
++
+ void ABitReader::putBits(uint32_t x, size_t n) {
+     CHECK_LE(n, 32u);
+ 
+diff -ruN av/media/libstagefright/include/ASFExtractor.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/ASFExtractor.h
+--- av/media/libstagefright/include/ASFExtractor.h	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/ASFExtractor.h	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,142 @@
++/*
++ * Copyright (C) 2011 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef ASF_EXTRACTOR_H_
++#define ASF_EXTRACTOR_H_
++
++#include <media/stagefright/foundation/ABase.h>
++#include <media/stagefright/MediaExtractor.h>
++#include <media/stagefright/MediaSource.h>
++#include <media/stagefright/DataSource.h>
++#include <media/stagefright/Utils.h>
++#include <utils/Vector.h>
++#include "asf.h"
++
++namespace android {
++
++///////////////////////////////////////////////////////////////////////////////
++// Function Pointer Declaration
++typedef int (*asf_init_function)(asf_file_t *);
++typedef int (*asf_get_packet_function)(asf_file_t *, asf_packet_t *);
++typedef int64_t (*asf_seek_to_msec_function)(asf_file_t *, int64_t);
++typedef asf_packet_t * (*asf_packet_create_function)();
++typedef int (*asf_packet_destroy_function)(asf_packet_t *);
++typedef asf_stream_t *(*asf_get_stream_function)(asf_file_t *, int);
++typedef void (*asf_close_function)(asf_file_t *);
++
++struct ASFExtractor : public MediaExtractor {
++    ASFExtractor(const sp<DataSource> &dataSource);
++
++    virtual size_t countTracks();
++
++    virtual sp<MediaSource> getTrack(size_t index);
++
++    virtual sp<MetaData> getTrackMetaData(
++            size_t index, uint32_t flags);
++
++    virtual sp<MetaData> getMetaData();
++    sp<DataSource> mDataSource;
++    void *mLibAsfHandle;
++protected:
++    virtual ~ASFExtractor();
++
++private:
++    struct ASFSource;
++
++    struct SampleInfo {
++        uint32_t mOffset;
++        bool mIsKey;
++    };
++
++    struct Track {
++        sp<MetaData> mMeta;
++        Vector<SampleInfo> mSamples;
++
++        enum Kind {
++            AUDIO,
++            VIDEO,
++            OTHER
++
++        } mKind;
++
++        size_t mNumSyncSamples;
++        size_t mThumbnailSampleSize;
++        ssize_t mThumbnailSampleIndex;
++        size_t mMaxSampleSize;
++
++        double mAvgChunkSize;
++        size_t mFirstChunkSize;
++        asf_stream_type_t mStreamNumber;
++    };
++
++    status_t mInitCheck;
++    Vector<Track> mTracks;
++    asf_file_t *mFileHandle;
++    int32_t mDataPacketPosition;
++    bool mIsVC1AdvancedProfile;
++
++    enum TrackTypes {
++        AUDIO_TRACK,
++        VIDEO_TRACK
++    } mTrackType;
++
++    mutable Mutex mLock;
++
++    ssize_t parseChunk(off64_t offset, off64_t size, int depth = 0);
++    status_t parseStreamHeader(off64_t offset, size_t size);
++    status_t parseStreamFormat(off64_t offset, size_t size);
++    status_t parseIndex(off64_t offset, size_t size);
++
++    status_t parseHeaders();
++
++    status_t getPacket(asf_file_t *mFileHandle, asf_packet_t *mPacket);
++
++    status_t getSampleTime(
++            size_t trackIndex, size_t sampleIndex, int64_t *sampleTimeUs);
++
++    status_t getSampleIndexAtTime(asf_file_t *mfileHandle, int64_t timeUs);
++
++    status_t addMPEG4CodecSpecificData(size_t trackIndex);
++    status_t addH264CodecSpecificData(size_t trackIndex);
++    status_t addVC1CodecSpecificData(asf_bitmapinfoheader_t *bmp, sp<MetaData> meta);
++    status_t addWMACodecSpecificData(asf_waveformatex_t *wav, sp<MetaData> meta);
++
++    static bool IsCorrectChunkType(
++        ssize_t trackIndex, Track::Kind kind, uint32_t chunkType);
++    asf_file_t* asfOpenConfigure();
++    asf_file_t* asfOpenCb(asf_iostream_t *iostream);
++
++    /////////////////////////////////////////////////////////////////////
++    // ASF Library function pointers
++    asf_init_function           libasf_init;
++    asf_get_packet_function     libasf_get_packet;
++    asf_seek_to_msec_function   libasf_seek_to_msec;
++    asf_packet_create_function  libasf_packet_create;
++    asf_packet_destroy_function libasf_packet_destroy;
++    asf_get_stream_function     libasf_get_stream;
++    asf_close_function          libasf_close;
++
++    DISALLOW_EVIL_CONSTRUCTORS(ASFExtractor);
++
++};
++
++bool SniffASF(
++        const sp<DataSource> &source, String8 *mimeType, float *confidence,
++        sp<AMessage> *);
++
++}  // namespace android
++
++#endif  // ASF_EXTRACTOR_H_
+diff -ruN av/media/libstagefright/include/AVIExtractor.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/AVIExtractor.h
+--- av/media/libstagefright/include/AVIExtractor.h	2014-10-03 18:57:54.184875460 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/AVIExtractor.h	2014-01-07 19:45:30.000000000 -0600
+@@ -39,6 +39,8 @@
+ 
+ protected:
+     virtual ~AVIExtractor();
++    bool mIsVC1SimpleProfile;
++    bool mIsVC1AdvancedProfile;
+ 
+ private:
+     struct AVISource;
+@@ -72,6 +74,9 @@
+         ssize_t mThumbnailSampleIndex;
+         size_t mMaxSampleSize;
+ 
++        uint8_t extraData[4]; // To store the STRUCT_C from AVI container
++        uint8_t *apExtraData; // To store the Sequence header content
++        uint32_t apExtraDataSize; // Size of the extra data stored
+         // If mBytesPerSample > 0:
+         double mAvgChunkSize;
+         size_t mFirstChunkSize;
+@@ -107,6 +112,7 @@
+ 
+     status_t addMPEG4CodecSpecificData(size_t trackIndex);
+     status_t addH264CodecSpecificData(size_t trackIndex);
++    status_t addVC1CodecSpecificData(size_t trackIndex);
+ 
+     static bool IsCorrectChunkType(
+         ssize_t trackIndex, Track::Kind kind, uint32_t chunkType);
+diff -ruN av/media/libstagefright/include/NuCachedFileSource2.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/NuCachedFileSource2.h
+--- av/media/libstagefright/include/NuCachedFileSource2.h	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/NuCachedFileSource2.h	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,149 @@
++/*
++ * Copyright (C) 2010 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef NU_CACHED_FILE_SOURCE_2_H_
++
++#define NU_CACHED_FILE_SOURCE_2_H_
++
++#include <media/stagefright/foundation/ABase.h>
++#include <media/stagefright/foundation/AHandlerReflector.h>
++#include <media/stagefright/DataSource.h>
++
++namespace android {
++
++struct ALooper;
++struct PageFileCache;
++
++struct NuCachedFileSource2 : public DataSource {
++    NuCachedFileSource2(
++            const sp<DataSource> &source,
++            const char *cacheConfig = NULL,
++            bool disconnectAtHighwatermark = false);
++
++    virtual status_t initCheck() const;
++
++    virtual ssize_t readAt(off64_t offset, void *data, size_t size);
++
++    virtual status_t getSize(off64_t *size);
++    virtual uint32_t flags();
++
++    virtual sp<DecryptHandle> DrmInitialization(const char* mime);
++    virtual void getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **client);
++    virtual String8 getUri();
++
++    virtual String8 getMIMEType() const;
++
++    ////////////////////////////////////////////////////////////////////////////
++
++    size_t cachedSize();
++    size_t approxDataRemaining(status_t *finalStatus) const;
++
++    void resumeFetchingIfNecessary();
++
++    // The following methods are supported only if the
++    // data source is HTTP-based; otherwise, ERROR_UNSUPPORTED
++    // is returned.
++    status_t getEstimatedBandwidthKbps(int32_t *kbps);
++    status_t setCacheStatCollectFreq(int32_t freqMs);
++
++    static void RemoveCacheSpecificHeaders(
++            KeyedVector<String8, String8> *headers,
++            String8 *cacheConfig,
++            bool *disconnectAtHighwatermark);
++
++protected:
++    virtual ~NuCachedFileSource2();
++
++private:
++    friend struct AHandlerReflector<NuCachedFileSource2>;
++
++    enum {
++        kPageSize                       = 65536,
++        kDefaultHighWaterThreshold      = 5 * 1024 * 1024,
++        kDefaultLowWaterThreshold       = 512 * 1024,
++
++        // Read data after a 15 sec timeout whether we're actively
++        // fetching or not.
++        kDefaultKeepAliveIntervalUs     = 15000000,
++        kFetchIntervalUs         = 100000ll,
++        kFetchDeferredIntervalUs = 10000ll,
++
++        kBypassCacheCheckTrigger = 100,
++        kBypassCacheDuration     = 1000,
++        kBypassCacheThreshold    = 10 // in percent
++    };
++
++    enum {
++        kWhatFetchMore  = 'fetc',
++        kWhatRead       = 'read',
++    };
++
++    enum {
++        kMaxNumRetries = 10,
++    };
++
++    sp<DataSource> mSource;
++    sp<AHandlerReflector<NuCachedFileSource2> > mReflector;
++    sp<ALooper> mLooper;
++
++    Mutex mSerializer;
++    mutable Mutex mLock;
++    Condition mCondition;
++
++    PageFileCache *mCache;
++    off64_t mCacheOffset;
++    status_t mFinalStatus;
++    off64_t mLastAccessPos;
++    sp<AMessage> mAsyncResult;
++    bool mFetching;
++    int64_t mLastFetchTimeUs;
++    int64_t mLastFetchEventTimeUs;
++
++    int32_t mNumRetriesLeft;
++
++    size_t mHighwaterThresholdBytes;
++    size_t mLowwaterThresholdBytes;
++
++    // If the keep-alive interval is 0, keep-alives are disabled.
++    int64_t mKeepAliveIntervalUs;
++
++    bool mDisconnectAtHighwatermark;
++    unsigned int mNbrSeeks;
++    unsigned int mNbrReads;
++    bool mBypassCache;
++
++    void onMessageReceived(const sp<AMessage> &msg);
++    void onFetch();
++    void onRead(const sp<AMessage> &msg);
++
++    void fetchInternal();
++    ssize_t readInternal(off64_t offset, void *data, size_t size);
++    status_t seekInternal_l(off64_t offset);
++
++    size_t approxDataRemaining_l(status_t *finalStatus) const;
++
++    void restartPrefetcherIfNecessary_l(
++            bool ignoreLowWaterThreshold = false, bool force = false);
++
++    void updateCacheParamsFromSystemProperty();
++    void updateCacheParamsFromString(const char *s);
++
++    DISALLOW_EVIL_CONSTRUCTORS(NuCachedFileSource2);
++};
++
++}  // namespace android
++
++#endif  // NU_CACHED_FILE_SOURCE_2_H_
+diff -ruN av/media/libstagefright/include/PCMExtractor.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/PCMExtractor.h
+--- av/media/libstagefright/include/PCMExtractor.h	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/PCMExtractor.h	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,61 @@
++/*
++ * Copyright (C) ST-Ericsson SA 2010
++ * Copyright (C) 2010 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Author: Andreas Gustafsson (andreas.a.gustafsson@stericsson.com)
++ *         for ST-Ericsson
++ */
++
++#ifndef PCM_EXTRACTOR_H_
++
++#define PCM_EXTRACTOR_H_
++
++#include <media/stagefright/DataSource.h>
++#include <media/stagefright/MediaSource.h>
++#include <media/stagefright/MediaExtractor.h>
++#include <media/stagefright/foundation/ABase.h>
++
++namespace android {
++
++class PCMExtractor : public MediaExtractor {
++public:
++    // Extractor assumes ownership of "source".
++    PCMExtractor(const sp<DataSource> &source);
++
++    virtual size_t countTracks();
++    virtual sp<MediaSource> getTrack(size_t index);
++    virtual sp<MetaData> getTrackMetaData(size_t index, uint32_t flags);
++
++    virtual sp<MetaData> getMetaData();
++
++protected:
++    virtual ~PCMExtractor();
++
++private:
++    sp<DataSource> mDataSource;
++    status_t mInitCheck;
++    bool mValidFormat;
++    off_t mDataOffset;
++    size_t mDataSize;
++    sp<MetaData> mTrackMeta;
++
++    status_t init();
++
++    DISALLOW_EVIL_CONSTRUCTORS(PCMExtractor);
++};
++
++}  // namespace android
++
++#endif  // PCM_EXTRACTOR_H_
+diff -ruN av/media/libstagefright/include/SampleTable.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/SampleTable.h
+--- av/media/libstagefright/include/SampleTable.h	2014-10-03 18:58:10.908876089 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/include/SampleTable.h	2014-01-07 19:45:30.000000000 -0600
+@@ -49,7 +49,7 @@
+     status_t setTimeToSampleParams(off64_t data_offset, size_t data_size);
+ 
+     status_t setCompositionTimeToSampleParams(
+-            off64_t data_offset, size_t data_size);
++            off64_t data_offset, size_t data_size, uint32_t *consumed_offset);
+ 
+     status_t setSyncSampleParams(off64_t data_offset, size_t data_size);
+ 
+diff -ruN av/media/libstagefright/matroska/MatroskaExtractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/matroska/MatroskaExtractor.cpp
+--- av/media/libstagefright/matroska/MatroskaExtractor.cpp	2014-10-03 18:58:10.912876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/matroska/MatroskaExtractor.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -423,7 +423,10 @@
+ }
+ 
+ int64_t BlockIterator::blockTimeUs() const {
+-    return (mBlockEntry->GetBlock()->GetTime(mCluster) + 500ll) / 1000ll;
++    if (mBlockEntry) {
++        return (mBlockEntry->GetBlock()->GetTime(mCluster) + 500ll) / 1000ll;
++    }
++    return 0;
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -463,12 +466,14 @@
+     const mkvparser::Block *block = mBlockIter.block();
+ 
+     int64_t timeUs = mBlockIter.blockTimeUs();
++    long frameCount = block->GetFrameCount();
++    MediaBuffer *bufferList[frameCount];
+ 
+-    for (int i = 0; i < block->GetFrameCount(); ++i) {
++    for (int i = 0; i < frameCount; ++i) {
+         const mkvparser::Block::Frame &frame = block->GetFrame(i);
+ 
+         MediaBuffer *mbuf = new MediaBuffer(frame.len);
+-        mbuf->meta_data()->setInt64(kKeyTime, timeUs);
++        bufferList[i] = mbuf;
+         mbuf->meta_data()->setInt32(kKeyIsSyncFrame, block->IsKey());
+ 
+         long n = frame.Read(mExtractor->mReader, (unsigned char *)mbuf->data());
+@@ -484,6 +489,17 @@
+ 
+     mBlockIter.advance();
+ 
++    // Calculates the timestamps of the frames by distributing them on
++    // the time frame between the current block and the next block.
++    int64_t deltaTimeUs = (mBlockIter.blockTimeUs() - timeUs) / frameCount;
++    if (deltaTimeUs < 0) {
++        deltaTimeUs = 0;
++    }
++
++    for (int i = 0; i < frameCount; ++i) {
++        bufferList[i]->meta_data()->setInt64(kKeyTime, timeUs);
++        timeUs += deltaTimeUs;
++    }
+     return OK;
+ }
+ 
+diff -ruN av/media/libstagefright/MediaDefs.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MediaDefs.cpp
+--- av/media/libstagefright/MediaDefs.cpp	2014-10-03 18:58:10.640876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MediaDefs.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -24,8 +24,10 @@
+ const char *MEDIA_MIMETYPE_VIDEO_AVC = "video/avc";
+ const char *MEDIA_MIMETYPE_VIDEO_MPEG4 = "video/mp4v-es";
+ const char *MEDIA_MIMETYPE_VIDEO_H263 = "video/3gpp";
++const char *MEDIA_MIMETYPE_VIDEO_H263_SW = "video/3gpp-sw";
+ const char *MEDIA_MIMETYPE_VIDEO_MPEG2 = "video/mpeg2";
+ const char *MEDIA_MIMETYPE_VIDEO_RAW = "video/raw";
++const char *MEDIA_MIMETYPE_VIDEO_VC1 = "video/vc1";
+ 
+ const char *MEDIA_MIMETYPE_AUDIO_AMR_NB = "audio/3gpp";
+ const char *MEDIA_MIMETYPE_AUDIO_AMR_WB = "audio/amr-wb";
+@@ -33,6 +35,7 @@
+ const char *MEDIA_MIMETYPE_AUDIO_MPEG_LAYER_I = "audio/mpeg-L1";
+ const char *MEDIA_MIMETYPE_AUDIO_MPEG_LAYER_II = "audio/mpeg-L2";
+ const char *MEDIA_MIMETYPE_AUDIO_AAC = "audio/mp4a-latm";
++const char *MEDIA_MIMETYPE_AUDIO_AAC_ELD = "audio/mp4a-eld";
+ const char *MEDIA_MIMETYPE_AUDIO_QCELP = "audio/qcelp";
+ const char *MEDIA_MIMETYPE_AUDIO_VORBIS = "audio/vorbis";
+ const char *MEDIA_MIMETYPE_AUDIO_G711_ALAW = "audio/g711-alaw";
+@@ -40,6 +43,7 @@
+ const char *MEDIA_MIMETYPE_AUDIO_RAW = "audio/raw";
+ const char *MEDIA_MIMETYPE_AUDIO_FLAC = "audio/flac";
+ const char *MEDIA_MIMETYPE_AUDIO_AAC_ADTS = "audio/aac-adts";
++const char *MEDIA_MIMETYPE_AUDIO_WMA = "audio/x-ms-wma";
+ 
+ const char *MEDIA_MIMETYPE_CONTAINER_MPEG4 = "video/mp4";
+ const char *MEDIA_MIMETYPE_CONTAINER_WAV = "audio/wav";
+@@ -50,6 +54,7 @@
+ const char *MEDIA_MIMETYPE_CONTAINER_MPEG2PS = "video/mp2p";
+ 
+ const char *MEDIA_MIMETYPE_CONTAINER_WVM = "video/wvm";
++const char *MEDIA_MIMETYPE_CONTAINER_ASF = "video/x-ms-asf";
+ 
+ const char *MEDIA_MIMETYPE_TEXT_3GPP = "text/3gpp-tt";
+ const char *MEDIA_MIMETYPE_TEXT_SUBRIP = "application/x-subrip";
+diff -ruN av/media/libstagefright/MediaExtractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MediaExtractor.cpp
+--- av/media/libstagefright/MediaExtractor.cpp	2014-10-03 18:57:53.328875429 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MediaExtractor.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -19,16 +19,19 @@
+ #include <utils/Log.h>
+ 
+ #include "include/AMRExtractor.h"
++#include "include/AVIExtractor.h"
+ #include "include/MP3Extractor.h"
+ #include "include/MPEG4Extractor.h"
+ #include "include/WAVExtractor.h"
+ #include "include/OggExtractor.h"
++#include "include/PCMExtractor.h"
+ #include "include/MPEG2PSExtractor.h"
+ #include "include/MPEG2TSExtractor.h"
+ #include "include/DRMExtractor.h"
+ #include "include/WVMExtractor.h"
+ #include "include/FLACExtractor.h"
+ #include "include/AACExtractor.h"
++#include "include/ASFExtractor.h"
+ 
+ #include "matroska/MatroskaExtractor.h"
+ 
+@@ -109,6 +112,8 @@
+         ret = new MatroskaExtractor(source);
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_MPEG2TS)) {
+         ret = new MPEG2TSExtractor(source);
++    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_AVI)) {
++        ret = new AVIExtractor(source);
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_WVM)) {
+         // Return now.  WVExtractor should not have the DrmFlag set in the block below.
+         return new WVMExtractor(source);
+@@ -116,6 +121,10 @@
+         ret = new AACExtractor(source, meta);
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_MPEG2PS)) {
+         ret = new MPEG2PSExtractor(source);
++    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_RAW)) {
++        ret = new PCMExtractor(source);
++    } else if (!strcasecmp(mime, MEDIA_MIMETYPE_CONTAINER_ASF)) {
++        ret = new ASFExtractor(source);
+     }
+ 
+     if (ret != NULL) {
+diff -ruN av/media/libstagefright/mpeg2ts/ESQueue.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/mpeg2ts/ESQueue.cpp
+--- av/media/libstagefright/mpeg2ts/ESQueue.cpp	2014-10-03 18:58:10.912876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/mpeg2ts/ESQueue.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -34,7 +34,12 @@
+ namespace android {
+ 
+ ElementaryStreamQueue::ElementaryStreamQueue(Mode mode)
+-    : mMode(mode) {
++    : mMode(mode),
++      mFrameSizeCBR(0),
++      mSamplingRateCBR(0),
++      mNumChannelsCBR(0),
++      mBitRateCBR(0),
++      mNumSamplesCBR(0){
+ }
+ 
+ sp<MetaData> ElementaryStreamQueue::getFormat() {
+@@ -360,7 +365,7 @@
+             TRESPASS();
+         }
+ 
+-        if (offset + aac_frame_length > mBuffer->size()) {
++        if (offset + aac_frame_length > mBuffer->size() || offset + aac_frame_length > 8192) {
+             break;
+         }
+ 
+@@ -555,9 +560,24 @@
+ 
+     size_t frameSize;
+     int samplingRate, numChannels, bitrate, numSamples;
+-    CHECK(GetMPEGAudioFrameSize(
++
++    // If the VBR flow will fail the flow will get automatically switched
++    // to CBR.
++    if(GetMPEGAudioFrameSize(
+                 header, &frameSize, &samplingRate, &numChannels,
+-                &bitrate, &numSamples));
++                &bitrate, &numSamples)) {
++        mFrameSizeCBR = frameSize;
++        mSamplingRateCBR = samplingRate;
++        mNumChannelsCBR = numChannels;
++        mBitRateCBR = bitrate;
++        mNumSamplesCBR = numSamples;
++    } else {
++        frameSize = mFrameSizeCBR;
++        samplingRate = mSamplingRateCBR;
++        numChannels = mNumChannelsCBR;
++        bitrate = mBitRateCBR;
++        numSamples = mNumSamplesCBR;
++    }
+ 
+     if (size < frameSize) {
+         return NULL;
+diff -ruN av/media/libstagefright/mpeg2ts/ESQueue.h /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/mpeg2ts/ESQueue.h
+--- av/media/libstagefright/mpeg2ts/ESQueue.h	2014-10-03 18:58:10.912876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/mpeg2ts/ESQueue.h	2014-01-07 19:45:30.000000000 -0600
+@@ -53,6 +53,14 @@
+ 
+     Mode mMode;
+ 
++    // Declaring member variables for storing the values for Constant Bit Rate
++    size_t mFrameSizeCBR;
++
++    int mSamplingRateCBR;
++    int mNumChannelsCBR;
++    int mBitRateCBR;
++    int mNumSamplesCBR;
++
+     sp<ABuffer> mBuffer;
+     List<RangeInfo> mRangeInfos;
+ 
+diff -ruN av/media/libstagefright/MPEG4Extractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MPEG4Extractor.cpp
+--- av/media/libstagefright/MPEG4Extractor.cpp	2014-10-03 18:58:10.640876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MPEG4Extractor.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -1073,11 +1073,11 @@
+                 return err;
+             }
+ 
+-            // Assume that a given buffer only contains at most 10 fragments,
++            // Assume that a given buffer only contains at most 128 fragments,
+             // each fragment originally prefixed with a 2 byte length will
+             // have a 4 byte header (0x00 0x00 0x00 0x01) after conversion,
+             // and thus will grow by 2 bytes per fragment.
+-            mLastTrack->meta->setInt32(kKeyMaxInputSize, max_size + 10 * 2);
++            mLastTrack->meta->setInt32(kKeyMaxInputSize, max_size + 128 * 2);
+             *offset += chunk_size;
+ 
+             // Calculate average frame rate.
+@@ -1114,15 +1114,25 @@
+ 
+         case FOURCC('c', 't', 't', 's'):
+         {
++            uint32_t consumed_offset;
+             status_t err =
+                 mLastTrack->sampleTable->setCompositionTimeToSampleParams(
+-                        data_offset, chunk_data_size);
++                        data_offset, chunk_data_size, &consumed_offset);
+ 
+             if (err != OK) {
+                 return err;
+             }
+ 
+-            *offset += chunk_size;
++            off64_t chunk_end = *offset + chunk_size;
++            *offset = data_offset + consumed_offset;
++
++            if (*offset < chunk_end) {
++                // Parse 'free' or 'skip' box
++                status_t err = parseChunk(offset, depth + 1);
++                if (err != OK) {
++                    return err;
++                }
++            }
+             break;
+         }
+ 
+@@ -1452,6 +1462,12 @@
+             break;
+         }
+ 
++        case FOURCC('f', 'r', 'e', 'e'):
++        case FOURCC('s', 'k', 'i', 'p'):
++        {
++            *offset += chunk_size;
++            break;
++        }
+         default:
+         {
+             *offset += chunk_size;
+@@ -1763,7 +1779,8 @@
+             return ERROR_MALFORMED;
+         }
+     } else if (!strcasecmp(mime, MEDIA_MIMETYPE_VIDEO_MPEG4)
+-            || !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)) {
++            || !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC)
++            || !strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_AAC_ELD)) {
+         if (!track->meta->findData(kKeyESDS, &type, &data, &size)
+                 || type != kTypeESDS) {
+             return ERROR_MALFORMED;
+@@ -1793,12 +1810,13 @@
+         return OK;
+     }
+ 
+-    if (objectTypeIndication  == 0x6b) {
++    if (objectTypeIndication  == 0x6b || objectTypeIndication == 0x69) {
+         // The media subtype is MP3 audio
+         // Our software MP3 audio decoder may not be able to handle
+-        // packetized MP3 audio; for now, lets just return ERROR_UNSUPPORTED
+-        ALOGE("MP3 track in MP4/3GPP file is not supported");
+-        return ERROR_UNSUPPORTED;
++        // packetized MP3 audio;
++        ALOGE("MP3 track in MP4/3GPP file is not supported, "
++            "continuing playback");
++        return OK;
+     }
+ 
+     const uint8_t *csd;
+@@ -1830,6 +1848,7 @@
+ 
+     if (objectType == 31) {  // AAC-ELD => additional 6 bits
+         objectType = 32 + br.getBits(6);
++        mLastTrack->meta->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_AAC_ELD);
+     }
+ 
+     uint32_t freqIndex = br.getBits(4);
+@@ -2428,7 +2447,7 @@
+             case FOURCC('m', 'o', 'o', 'v'):
+             {
+                 moovAtomEndOffset = offset + chunkSize;
+-
++                foundGoodFileType = true;
+                 done = true;
+                 break;
+             }
+diff -ruN av/media/libstagefright/MPEG4Writer.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MPEG4Writer.cpp
+--- av/media/libstagefright/MPEG4Writer.cpp	2014-10-03 18:58:10.640876079 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/MPEG4Writer.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -2094,13 +2094,8 @@
+             trackProgressStatus(timestampUs);
+         }
+         if (!hasMultipleTracks) {
+-            off64_t offset = mIsAvc? mOwner->addLengthPrefixedSample_l(copy)
+-                                 : mOwner->addSample_l(copy);
+-            if (mChunkOffsets.empty()) {
+-                addChunkOffset(offset);
+-            }
+-            copy->release();
+-            copy = NULL;
++            mChunkSamples.push_back(copy);
++            bufferChunk(timestampUs);
+             continue;
+         }
+ 
+diff -ruN av/media/libstagefright/NuCachedFileSource2.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/NuCachedFileSource2.cpp
+--- av/media/libstagefright/NuCachedFileSource2.cpp	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/NuCachedFileSource2.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,735 @@
++/*
++ * Copyright (C) 2010 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++//#define LOG_NDEBUG 0
++#define LOG_TAG "NuCachedFileSource2"
++#include <utils/Log.h>
++
++#include "include/NuCachedFileSource2.h"
++#include "include/HTTPBase.h"
++
++#include <cutils/properties.h>
++#include <media/stagefright/foundation/ADebug.h>
++#include <media/stagefright/foundation/AMessage.h>
++#include <media/stagefright/MediaErrors.h>
++
++namespace android {
++
++struct PageFileCache {
++    PageFileCache(size_t pageSize);
++    ~PageFileCache();
++
++    struct Page {
++        void *mData;
++        size_t mSize;
++    };
++
++    Page *acquirePage();
++    void releasePage(Page *page);
++
++    void appendPage(Page *page);
++    size_t releaseFromStart(size_t maxBytes);
++
++    size_t totalSize() const {
++        return mTotalSize;
++    }
++
++    void copy(size_t from, void *data, size_t size);
++
++private:
++    size_t mPageSize;
++    size_t mTotalSize;
++
++    List<Page *> mActivePages;
++    List<Page *> mFreePages;
++
++    void freePages(List<Page *> *list);
++
++    DISALLOW_EVIL_CONSTRUCTORS(PageFileCache);
++};
++
++PageFileCache::PageFileCache(size_t pageSize)
++    : mPageSize(pageSize),
++      mTotalSize(0) {
++}
++
++PageFileCache::~PageFileCache() {
++    freePages(&mActivePages);
++    freePages(&mFreePages);
++}
++
++void PageFileCache::freePages(List<Page *> *list) {
++    List<Page *>::iterator it = list->begin();
++    while (it != list->end()) {
++        Page *page = *it;
++
++        free(page->mData);
++        delete page;
++        page = NULL;
++
++        ++it;
++    }
++}
++
++PageFileCache::Page *PageFileCache::acquirePage() {
++    if (!mFreePages.empty()) {
++        List<Page *>::iterator it = mFreePages.begin();
++        Page *page = *it;
++        mFreePages.erase(it);
++
++        return page;
++    }
++
++    Page *page = new Page;
++    page->mData = malloc(mPageSize);
++    page->mSize = 0;
++
++    return page;
++}
++
++void PageFileCache::releasePage(Page *page) {
++    page->mSize = 0;
++    mFreePages.push_back(page);
++}
++
++void PageFileCache::appendPage(Page *page) {
++    mTotalSize += page->mSize;
++    mActivePages.push_back(page);
++}
++
++size_t PageFileCache::releaseFromStart(size_t maxBytes) {
++    size_t bytesReleased = 0;
++
++    while (maxBytes > 0 && !mActivePages.empty()) {
++        List<Page *>::iterator it = mActivePages.begin();
++
++        Page *page = *it;
++
++        if (maxBytes < page->mSize) {
++            break;
++        }
++
++        mActivePages.erase(it);
++
++        maxBytes -= page->mSize;
++        bytesReleased += page->mSize;
++
++        releasePage(page);
++    }
++
++    mTotalSize -= bytesReleased;
++    return bytesReleased;
++}
++
++void PageFileCache::copy(size_t from, void *data, size_t size) {
++    ALOGV("copy from %d size %d", from, size);
++
++    if (size == 0) {
++        return;
++    }
++
++    CHECK_LE(from + size, mTotalSize);
++
++    size_t offset = 0;
++    List<Page *>::iterator it = mActivePages.begin();
++    while (from >= offset + (*it)->mSize) {
++        offset += (*it)->mSize;
++        ++it;
++    }
++
++    size_t delta = from - offset;
++    size_t avail = (*it)->mSize - delta;
++
++    if (avail >= size) {
++        memcpy(data, (const uint8_t *)(*it)->mData + delta, size);
++        return;
++    }
++
++    memcpy(data, (const uint8_t *)(*it)->mData + delta, avail);
++    ++it;
++    data = (uint8_t *)data + avail;
++    size -= avail;
++
++    while (size > 0) {
++        size_t copy = (*it)->mSize;
++        if (copy > size) {
++            copy = size;
++        }
++        memcpy(data, (*it)->mData, copy);
++        data = (uint8_t *)data + copy;
++        size -= copy;
++        ++it;
++    }
++}
++
++////////////////////////////////////////////////////////////////////////////////
++
++NuCachedFileSource2::NuCachedFileSource2(
++        const sp<DataSource> &source,
++        const char *cacheConfig,
++        bool disconnectAtHighwatermark)
++    : mSource(source),
++      mReflector(new AHandlerReflector<NuCachedFileSource2>(this)),
++      mLooper(new ALooper),
++      mCache(new PageFileCache(kPageSize)),
++      mCacheOffset(0),
++      mFinalStatus(OK),
++      mLastAccessPos(0),
++      mFetching(true),
++      mLastFetchTimeUs(-1),
++      mLastFetchEventTimeUs(0),
++      mNumRetriesLeft(kMaxNumRetries),
++      mHighwaterThresholdBytes(kDefaultHighWaterThreshold),
++      mLowwaterThresholdBytes(kDefaultLowWaterThreshold),
++      mKeepAliveIntervalUs(kDefaultKeepAliveIntervalUs),
++      mDisconnectAtHighwatermark(disconnectAtHighwatermark),
++      mNbrSeeks(0),
++      mNbrReads(0),
++      mBypassCache(false) {
++    // We are NOT going to support disconnect-at-highwatermark indefinitely
++    // and we are not guaranteeing support for client-specified cache
++    // parameters. Both of these are temporary measures to solve a specific
++    // problem that will be solved in a better way going forward.
++
++    updateCacheParamsFromSystemProperty();
++
++    if (cacheConfig != NULL) {
++        updateCacheParamsFromString(cacheConfig);
++    }
++
++    if (mDisconnectAtHighwatermark) {
++        // Makes no sense to disconnect and do keep-alives...
++        mKeepAliveIntervalUs = 0;
++    }
++
++    mLooper->setName("NuCachedFileSource2");
++    mLooper->registerHandler(mReflector);
++    mLooper->start();
++
++    Mutex::Autolock autoLock(mLock);
++    (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++}
++
++NuCachedFileSource2::~NuCachedFileSource2() {
++    mLooper->stop();
++    mLooper->unregisterHandler(mReflector->id());
++
++    delete mCache;
++    mCache = NULL;
++}
++
++status_t NuCachedFileSource2::getEstimatedBandwidthKbps(int32_t *kbps) {
++    if (mSource->flags() & kIsHTTPBasedSource) {
++        HTTPBase* source = static_cast<HTTPBase *>(mSource.get());
++        return source->getEstimatedBandwidthKbps(kbps);
++    }
++    return ERROR_UNSUPPORTED;
++}
++
++status_t NuCachedFileSource2::setCacheStatCollectFreq(int32_t freqMs) {
++    if (mSource->flags() & kIsHTTPBasedSource) {
++        HTTPBase *source = static_cast<HTTPBase *>(mSource.get());
++        return source->setBandwidthStatCollectFreq(freqMs);
++    }
++    return ERROR_UNSUPPORTED;
++}
++
++status_t NuCachedFileSource2::initCheck() const {
++    return mSource->initCheck();
++}
++
++status_t NuCachedFileSource2::getSize(off64_t *size) {
++    return mSource->getSize(size);
++}
++
++uint32_t NuCachedFileSource2::flags() {
++    // Remove HTTP related flags since NuCachedFileSource2 is not HTTP-based.
++    uint32_t flags = mSource->flags() & ~(kWantsPrefetching | kIsHTTPBasedSource);
++    return (flags | kIsCachingDataSource);
++}
++
++void NuCachedFileSource2::onMessageReceived(const sp<AMessage> &msg) {
++    switch (msg->what()) {
++        case kWhatFetchMore:
++        {
++            onFetch();
++            break;
++        }
++
++        case kWhatRead:
++        {
++            onRead(msg);
++            break;
++        }
++
++        default:
++            TRESPASS();
++    }
++}
++
++void NuCachedFileSource2::fetchInternal() {
++    ALOGV("fetchInternal");
++
++    bool reconnect = false;
++
++    {
++        Mutex::Autolock autoLock(mLock);
++        CHECK(mFinalStatus == OK || mNumRetriesLeft > 0);
++
++        if (mFinalStatus != OK) {
++            --mNumRetriesLeft;
++
++            reconnect = true;
++        }
++    }
++
++    if (reconnect) {
++        status_t err =
++            mSource->reconnectAtOffset(mCacheOffset + mCache->totalSize());
++
++        Mutex::Autolock autoLock(mLock);
++
++        if (err == ERROR_UNSUPPORTED) {
++            mNumRetriesLeft = 0;
++            return;
++        } else if (err != OK) {
++            ALOGI("The attempt to reconnect failed, %d retries remaining",
++                 mNumRetriesLeft);
++
++            return;
++        }
++    }
++
++    PageFileCache::Page *page = mCache->acquirePage();
++
++    ssize_t n = mSource->readAt(
++            mCacheOffset + mCache->totalSize(), page->mData, kPageSize);
++
++    Mutex::Autolock autoLock(mLock);
++
++    if (n < 0) {
++        ALOGE("source returned error %ld, %d retries left", n, mNumRetriesLeft);
++        mFinalStatus = n;
++        mCache->releasePage(page);
++    } else if (n == 0) {
++        ALOGI("ERROR_END_OF_STREAM");
++
++        mNumRetriesLeft = 0;
++        mFinalStatus = ERROR_END_OF_STREAM;
++
++        mCache->releasePage(page);
++    } else {
++        if (mFinalStatus != OK) {
++            ALOGI("retrying a previously failed read succeeded.");
++        }
++        mNumRetriesLeft = kMaxNumRetries;
++        mFinalStatus = OK;
++
++        page->mSize = n;
++        mCache->appendPage(page);
++    }
++}
++
++void NuCachedFileSource2::onFetch() {
++    ALOGV("onFetch");
++
++    int64_t now = ALooper::GetNowUs();
++    if (mFinalStatus != OK && mNumRetriesLeft == 0) {
++        ALOGV("EOS reached, done prefetching for now");
++        mFetching = false;
++    }
++
++    if (mFetching) {
++        fetchInternal();
++
++        mLastFetchTimeUs = now;
++
++        if (mFetching && mCache->totalSize() >= mHighwaterThresholdBytes) {
++            ALOGI("Cache full, done prefetching for now");
++            mFetching = false;
++
++            if (mDisconnectAtHighwatermark
++                    && (mSource->flags() & DataSource::kIsHTTPBasedSource)) {
++                ALOGV("Disconnecting at high watermark");
++                static_cast<HTTPBase *>(mSource.get())->disconnect();
++                mFinalStatus = -EAGAIN;
++            }
++        }
++    } else {
++        Mutex::Autolock autoLock(mLock);
++        restartPrefetcherIfNecessary_l();
++    }
++
++    if (mFetching) {
++        mLastFetchEventTimeUs = now;
++        (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++    }
++
++}
++
++void NuCachedFileSource2::onRead(const sp<AMessage> &msg) {
++    ALOGV("onRead");
++
++    int64_t offset;
++    CHECK(msg->findInt64("offset", &offset));
++
++    void *data;
++    CHECK(msg->findPointer("data", &data));
++
++    size_t size;
++    CHECK(msg->findSize("size", &size));
++
++    ssize_t result = readInternal(offset, data, size);
++
++    if (result == -EAGAIN) {
++        msg->post(10000);
++        int64_t now = ALooper::GetNowUs();
++        if (now - mLastFetchEventTimeUs > kFetchDeferredIntervalUs) {
++            mLastFetchEventTimeUs = now;
++            (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++        }
++        return;
++    }
++
++    Mutex::Autolock autoLock(mLock);
++
++    CHECK(mAsyncResult == NULL);
++
++    mAsyncResult = new AMessage;
++    mAsyncResult->setInt32("result", result);
++
++    mCondition.signal();
++}
++
++void NuCachedFileSource2::restartPrefetcherIfNecessary_l(
++        bool ignoreLowWaterThreshold, bool force) {
++    static const size_t kGrayArea = 3 * 1024 * 1024;
++
++    if (mFetching || (mFinalStatus != OK && mNumRetriesLeft == 0)) {
++        return;
++    }
++
++    if (!ignoreLowWaterThreshold && !force
++            && mCacheOffset + mCache->totalSize() - mLastAccessPos
++                >= mLowwaterThresholdBytes) {
++        return;
++    }
++
++    size_t maxBytes = mLastAccessPos - mCacheOffset;
++
++    if (!force) {
++        if (maxBytes < kGrayArea) {
++            return;
++        }
++
++        maxBytes -= kGrayArea;
++    }
++
++    size_t actualBytes = mCache->releaseFromStart(maxBytes);
++    mCacheOffset += actualBytes;
++
++    ALOGI("restarting prefetcher, totalSize = %d", mCache->totalSize());
++    mFetching = true;
++}
++
++ssize_t NuCachedFileSource2::readAt(off64_t offset, void *data, size_t size) {
++    Mutex::Autolock autoSerializer(mSerializer);
++
++    ALOGV("readAt offset %lld, size %d", offset, size);
++
++    Mutex::Autolock autoLock(mLock);
++
++    int64_t now = ALooper::GetNowUs();
++
++    ++mNbrReads;
++
++    // If the request can be completely satisfied from the cache, do so.
++
++    if (offset >= mCacheOffset
++            && offset + size <= mCacheOffset + mCache->totalSize()) {
++        size_t delta = offset - mCacheOffset;
++        mCache->copy(delta, data, size);
++
++        mLastAccessPos = offset + size;
++
++        if (now - mLastFetchEventTimeUs > kFetchIntervalUs) {
++            mLastFetchEventTimeUs = now;
++            (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++        }
++        return size;
++    }
++
++    sp<AMessage> msg = new AMessage(kWhatRead, mReflector->id());
++    msg->setInt64("offset", offset);
++    msg->setPointer("data", data);
++    msg->setSize("size", size);
++
++    CHECK(mAsyncResult == NULL);
++    msg->post();
++
++    while (mAsyncResult == NULL) {
++        mCondition.wait(mLock);
++    }
++
++    int32_t result;
++    CHECK(mAsyncResult->findInt32("result", &result));
++
++    mAsyncResult.clear();
++
++    if (result > 0) {
++        mLastAccessPos = offset + result;
++    }
++
++    if (now - mLastFetchEventTimeUs > kFetchIntervalUs) {
++        mLastFetchEventTimeUs = now;
++        (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++    }
++    return (ssize_t)result;
++}
++
++size_t NuCachedFileSource2::cachedSize() {
++    Mutex::Autolock autoLock(mLock);
++    return mCacheOffset + mCache->totalSize();
++}
++
++size_t NuCachedFileSource2::approxDataRemaining(status_t *finalStatus) const {
++    Mutex::Autolock autoLock(mLock);
++    return approxDataRemaining_l(finalStatus);
++}
++
++size_t NuCachedFileSource2::approxDataRemaining_l(status_t *finalStatus) const {
++    *finalStatus = mFinalStatus;
++
++    if (mFinalStatus != OK && mNumRetriesLeft > 0) {
++        // Pretend that everything is fine until we're out of retries.
++        *finalStatus = OK;
++    }
++
++    off64_t lastBytePosCached = mCacheOffset + mCache->totalSize();
++    if (mLastAccessPos < lastBytePosCached) {
++        return lastBytePosCached - mLastAccessPos;
++    }
++    return 0;
++}
++
++ssize_t NuCachedFileSource2::readInternal(off64_t offset, void *data, size_t size) {
++    if (size > (size_t)mHighwaterThresholdBytes) {
++        return -EINVAL;
++    }
++    ALOGV("readInternal offset %lld size %d", offset, size);
++
++    if (mBypassCache) {
++        if  (mNbrReads > kBypassCacheDuration) {
++            ALOGI("try to enable cache again");
++            mBypassCache = false;
++            mNbrReads = 0;
++            mNbrSeeks = 0;
++        }
++        return mSource->readAt(offset, data, size);
++    }
++
++    Mutex::Autolock autoLock(mLock);
++
++    if (!mFetching) {
++        mLastAccessPos = offset;
++        restartPrefetcherIfNecessary_l(
++                false, // ignoreLowWaterThreshold
++                true); // force
++    }
++
++    if (offset < mCacheOffset
++            || offset >= (off64_t)(mCacheOffset + mCache->totalSize())
++            || (!mFetching
++                && offset <= (off_t)(mCacheOffset + mCache->totalSize())
++                && offset + size > mCacheOffset + mCache->totalSize())) {
++        static const off64_t kPadding = 256 * 1024;
++
++        // In the presence of multiple decoded streams, once of them will
++        // trigger this seek request, the other one will request data "nearby"
++        // soon, adjust the seek position so that that subsequent request
++        // does not trigger another seek.
++        off64_t seekOffset = (offset > kPadding) ? offset - kPadding : 0;
++
++        seekInternal_l(seekOffset);
++    }
++
++    size_t delta = offset - mCacheOffset;
++
++    if (mFinalStatus != OK && mNumRetriesLeft == 0) {
++        if (delta >= mCache->totalSize()) {
++            return mFinalStatus;
++        }
++
++        size_t avail = mCache->totalSize() - delta;
++
++        if (avail > size) {
++            avail = size;
++        }
++
++        mCache->copy(delta, data, avail);
++
++        return avail;
++    }
++
++    if (offset + size <= mCacheOffset + mCache->totalSize()) {
++        mCache->copy(delta, data, size);
++
++        return size;
++    }
++
++    ALOGV("deferring read");
++
++    return -EAGAIN;
++}
++
++status_t NuCachedFileSource2::seekInternal_l(off64_t offset) {
++    mLastAccessPos = offset;
++
++    if (offset >= mCacheOffset
++            && offset <= (off64_t)(mCacheOffset + mCache->totalSize())) {
++        return OK;
++    }
++
++    ++mNbrSeeks;
++    if (mNbrReads >= kBypassCacheCheckTrigger) {
++        if (mNbrSeeks * 100 / mNbrReads >= kBypassCacheThreshold) {
++            ALOGI("too many cache misses, bypassing cache");
++            mBypassCache = true;
++        }
++        mNbrReads = 0;
++        mNbrSeeks = 0;
++    }
++
++    ALOGI("new range: offset= %lld", offset);
++
++    mCacheOffset = offset;
++
++    size_t totalSize = mCache->totalSize();
++    CHECK_EQ(mCache->releaseFromStart(totalSize), totalSize);
++
++    mNumRetriesLeft = kMaxNumRetries;
++    mFinalStatus = OK;
++    mFetching = true;
++
++    mLastFetchEventTimeUs = ALooper::GetNowUs();
++    (new AMessage(kWhatFetchMore, mReflector->id()))->post();
++
++    return OK;
++}
++
++void NuCachedFileSource2::resumeFetchingIfNecessary() {
++    Mutex::Autolock autoLock(mLock);
++
++    restartPrefetcherIfNecessary_l(true /* ignore low water threshold */);
++}
++
++sp<DecryptHandle> NuCachedFileSource2::DrmInitialization(const char* mime) {
++    return mSource->DrmInitialization(mime);
++}
++
++void NuCachedFileSource2::getDrmInfo(sp<DecryptHandle> &handle, DrmManagerClient **client) {
++    mSource->getDrmInfo(handle, client);
++}
++
++String8 NuCachedFileSource2::getUri() {
++    return mSource->getUri();
++}
++
++String8 NuCachedFileSource2::getMIMEType() const {
++    return mSource->getMIMEType();
++}
++
++void NuCachedFileSource2::updateCacheParamsFromSystemProperty() {
++    char value[PROPERTY_VALUE_MAX];
++    if (!property_get("media.stagefright.cache-params", value, NULL)) {
++        return;
++    }
++
++    updateCacheParamsFromString(value);
++}
++
++void NuCachedFileSource2::updateCacheParamsFromString(const char *s) {
++    ssize_t lowwaterMarkKb, highwaterMarkKb;
++    int keepAliveSecs;
++
++    if (sscanf(s, "%ld/%ld/%d",
++               &lowwaterMarkKb, &highwaterMarkKb, &keepAliveSecs) != 3) {
++        ALOGE("Failed to parse cache parameters from '%s'.", s);
++        return;
++    }
++
++    if (lowwaterMarkKb >= 0) {
++        mLowwaterThresholdBytes = lowwaterMarkKb * 1024;
++    } else {
++        mLowwaterThresholdBytes = kDefaultLowWaterThreshold;
++    }
++
++    if (highwaterMarkKb >= 0) {
++        mHighwaterThresholdBytes = highwaterMarkKb * 1024;
++    } else {
++        mHighwaterThresholdBytes = kDefaultHighWaterThreshold;
++    }
++
++    if (mLowwaterThresholdBytes >= mHighwaterThresholdBytes) {
++        ALOGE("Illegal low/highwater marks specified, reverting to defaults.");
++
++        mLowwaterThresholdBytes = kDefaultLowWaterThreshold;
++        mHighwaterThresholdBytes = kDefaultHighWaterThreshold;
++    }
++
++    if (keepAliveSecs >= 0) {
++        mKeepAliveIntervalUs = keepAliveSecs * 1000000ll;
++    } else {
++        mKeepAliveIntervalUs = kDefaultKeepAliveIntervalUs;
++    }
++
++    ALOGV("lowwater = %d bytes, highwater = %d bytes, keepalive = %lld us",
++         mLowwaterThresholdBytes,
++         mHighwaterThresholdBytes,
++         mKeepAliveIntervalUs);
++}
++
++// static
++void NuCachedFileSource2::RemoveCacheSpecificHeaders(
++        KeyedVector<String8, String8> *headers,
++        String8 *cacheConfig,
++        bool *disconnectAtHighwatermark) {
++    *cacheConfig = String8();
++    *disconnectAtHighwatermark = false;
++
++    if (headers == NULL) {
++        return;
++    }
++
++    ssize_t index;
++    if ((index = headers->indexOfKey(String8("x-cache-config"))) >= 0) {
++        *cacheConfig = headers->valueAt(index);
++
++        headers->removeItemsAt(index);
++
++        ALOGV("Using special cache config '%s'", cacheConfig->string());
++    }
++
++    if ((index = headers->indexOfKey(
++                    String8("x-disconnect-at-highwatermark"))) >= 0) {
++        *disconnectAtHighwatermark = true;
++        headers->removeItemsAt(index);
++
++        ALOGV("Client requested disconnection at highwater mark");
++    }
++}
++
++}  // namespace android
+diff -ruN av/media/libstagefright/omx/SoftOMXPlugin.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/omx/SoftOMXPlugin.cpp
+--- av/media/libstagefright/omx/SoftOMXPlugin.cpp	2014-10-03 18:58:10.916876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/omx/SoftOMXPlugin.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -34,7 +34,9 @@
+     const char *mRole;
+ 
+ } kComponents[] = {
++    { "OMX.ST.aac.decoder", "ste_aacdec", "audio_decoder.aac" },
+     { "OMX.google.aac.decoder", "aacdec", "audio_decoder.aac" },
++    { "OMX.google.aac.decoder", "aacdec", "audio_decoder.aeld" },
+     { "OMX.google.aac.encoder", "aacenc", "audio_encoder.aac" },
+     { "OMX.google.amrnb.decoder", "amrdec", "audio_decoder.amrnb" },
+     { "OMX.google.amrnb.encoder", "amrnbenc", "audio_encoder.amrnb" },
+@@ -48,9 +50,11 @@
+     { "OMX.google.h263.encoder", "mpeg4enc", "video_encoder.h263" },
+     { "OMX.google.mpeg4.decoder", "mpeg4dec", "video_decoder.mpeg4" },
+     { "OMX.google.mpeg4.encoder", "mpeg4enc", "video_encoder.mpeg4" },
++    { "OMX.ST.mp3.decoder", "ste_mp3dec", "audio_decoder.mp3" },
+     { "OMX.google.mp3.decoder", "mp3dec", "audio_decoder.mp3" },
+     { "OMX.google.vorbis.decoder", "vorbisdec", "audio_decoder.vorbis" },
+     { "OMX.google.vpx.decoder", "vpxdec", "video_decoder.vpx" },
++    { "OMX.ST.AFM.decoder.wmapro_v10", "ste_wmapro_v10", "audio_decoder.wmapro" },
+     { "OMX.google.raw.decoder", "rawdec", "audio_decoder.raw" },
+     { "OMX.google.flac.encoder", "flacenc", "audio_encoder.flac" },
+ };
+diff -ruN av/media/libstagefright/OMXCodec.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/OMXCodec.cpp
+--- av/media/libstagefright/OMXCodec.cpp	2014-10-03 18:58:10.644876080 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/OMXCodec.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -234,6 +234,22 @@
+     }
+ }
+ 
++//static
++uint32_t OMXCodec::OmxToHALFormat(OMX_COLOR_FORMATTYPE omxValue) {
++    switch (omxValue) {
++        case OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB:
++            return HAL_PIXEL_FORMAT_YCBCR42XMBN;
++        case OMX_COLOR_FormatYUV420Planar:
++            return HAL_PIXEL_FORMAT_YCbCr_420_P;
++        case OMX_COLOR_FormatYUV420SemiPlanar:
++            return HAL_PIXEL_FORMAT_YCbCr_420_SP;
++        default:
++            ALOGI("Unknown OMX pixel format (0x%X), passing it on unchanged", omxValue);
++            return omxValue;
++    }
++}
++
++
+ // static
+ uint32_t OMXCodec::getComponentQuirks(
+         const MediaCodecList *list, size_t index) {
+@@ -251,6 +267,16 @@
+         quirks |= kOutputBuffersAreUnreadable;
+     }
+ 
++    if (list->codecHasQuirk(
++                index, "requires-store-metadata-before-idle")) {
++        quirks |= kRequiresStoreMetaDataBeforeIdle;
++        quirks |= kStoreMetaDataInVideoBuffers;
++    }
++    if (list->codecHasQuirk(
++                index, "override-default-avc-profile")) {
++        quirks |= kOverrideDefaultAVCProfile;
++    }
++
+     return quirks;
+ }
+ 
+@@ -455,6 +481,56 @@
+     return OK;
+ }
+ 
++status_t OMXCodec::parseVC1CodecSpecificData(
++        const void *data, size_t size) {
++    static const uint32_t kVC1StartCode = 0x000001;
++    const uint8_t *ptr = (const uint8_t *)data;
++    uint32_t startCode = 0;
++
++    //************************************************************************************
++    // strf chunk of AVI stream has Sequence Header and Entry point Header which are     *
++    // specific to VC1-advanced profile stream                                           *
++    // --------------------------------------------------------------------------------- *
++    //                           'strf' Chunk                                            *
++    //         Sequence Header Start Code(SH)     --> 0x00 00 01 0f                      *
++    //         Entry Point Header Start Code(EPH) --> 0x00 00 01 0e                      *
++    // strf Chunk starts with 4 bytes of ChunkSize, 4 bytes of Width & 4 bytes of Height *
++    // followed by SH and EPH as shown below. Size of SH & EPH would not be part of      *
++    // stream data, needs to identify the same based on strf Chunk size                  *
++    // -----------------------------------------------------------------------           *
++    // |      |      |      |      |      |      |      |      |      |      |           *
++    // |  00  |  00  |  01  |  0f  |  xx  |  xx  |  xx  |  xx  |  xx  |  xx  |           *
++    // |      |      |      |      |      |      |      |      |      |      |           *
++    // -----------------------------------------------------------------------           *
++    // |      |      |      |      |      |      |      |      |      |      |           *
++    // |  00  |  00  |  01  |  0e  |  xx  |  xx  |  xx  |  xx  |  xx  |  xx  |           *
++    // |      |      |      |      |      |      |      |      |      |      |           *
++    // -----------------------------------------------------------------------           *
++    // minimum size should be less than 6 bytes as header is of 4 bytes                  *
++    // and atleast 1 byte of data. Checking for VC1 Start Code                           *
++    //***********************************************************************************/
++
++    startCode = (ptr[0] << 16) | (ptr[1] << 8) | ptr[2];
++    if (size < 6 || startCode != kVC1StartCode) {
++        return ERROR_MALFORMED;
++    }
++
++    // ReSync to the next start code to separate Sequence Header and Entry Point Header
++    uint32_t dataindex = 2;
++    uint32_t sizeOfSequenceHeader, sizeOfEntryPointHeader;
++    startCode = 0;
++    while (startCode != kVC1StartCode && dataindex < size) {
++        dataindex++;
++        startCode = (ptr[dataindex] << 16) | (ptr[dataindex + 1] << 8) |
++                ptr[dataindex + 2];
++    }
++    sizeOfSequenceHeader = dataindex;
++    addCodecSpecificData(ptr, sizeOfSequenceHeader);
++    sizeOfEntryPointHeader = size - dataindex;
++    addCodecSpecificData(ptr + dataindex, sizeOfEntryPointHeader);
++    return OK;
++}
++
+ status_t OMXCodec::configureCodec(const sp<MetaData> &meta) {
+     ALOGV("configureCodec protected=%d",
+          (mFlags & kEnableGrallocUsageProtected) ? 1 : 0);
+@@ -493,6 +569,22 @@
+ 
+             CHECK(meta->findData(kKeyVorbisBooks, &type, &data, &size));
+             addCodecSpecificData(data, size);
++        } else if (meta->findData(kKeyWMAInfo, &type, &data, &size)) {
++            addCodecSpecificData(data, size);
++        } else if (meta->findData(kKeyVC1Info, &type, &data, &size)) {
++            status_t err;
++            // *************************************************************** *
++            // In case of VC-1 Advanced Profile, the following function shall  *
++            // parse the metadata, generate the codecSpecificData and push the *
++            // same into codecSpecificData List and return a OK                *
++            // In case of VC-1 Simple or Main Profile streams, the function    *
++            // returns an error code based on which the codecSpecificData      *
++            // generated by the extractor is directly pushed into the list.    *
++            // *************************************************************** *
++            err = parseVC1CodecSpecificData(data, size);
++            if (err != OK) {
++                addCodecSpecificData(data, size);
++            }
+         }
+     }
+ 
+@@ -704,6 +796,7 @@
+         case OMX_COLOR_FormatYUV420Planar:
+         case OMX_COLOR_FormatYUV420SemiPlanar:
+         case OMX_TI_COLOR_FormatYUV420PackedSemiPlanar:
++        case OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB:
+         /*
+         * FIXME: For the Opaque color format, the frame size does not
+         * need to be (w*h*3)/2. It just needs to
+@@ -1123,8 +1216,10 @@
+     h264type.eProfile = static_cast<OMX_VIDEO_AVCPROFILETYPE>(profileLevel.mProfile);
+     h264type.eLevel = static_cast<OMX_VIDEO_AVCLEVELTYPE>(profileLevel.mLevel);
+ 
++    // Override the default AVC profile settings and take the parameters received from codec
+     // XXX
+-    if (h264type.eProfile != OMX_VIDEO_AVCProfileBaseline) {
++    if ((h264type.eProfile != OMX_VIDEO_AVCProfileBaseline) &&
++        (!(mQuirks & kOverrideDefaultAVCProfile))) {
+         ALOGW("Use baseline profile instead of %d for AVC recording",
+             h264type.eProfile);
+         h264type.eProfile = OMX_VIDEO_AVCProfileBaseline;
+@@ -1185,6 +1280,8 @@
+         compressionFormat = OMX_VIDEO_CodingVPX;
+     } else if (!strcasecmp(MEDIA_MIMETYPE_VIDEO_MPEG2, mime)) {
+         compressionFormat = OMX_VIDEO_CodingMPEG2;
++    } else if (!strcasecmp(MEDIA_MIMETYPE_VIDEO_VC1, mime)) {
++        compressionFormat = OMX_VIDEO_CodingWMV;
+     } else {
+         ALOGE("Not a supported video mime type: %s", mime);
+         CHECK(!"Should not be here. Not a supported video mime type.");
+@@ -1214,7 +1311,8 @@
+                || format.eColorFormat == OMX_COLOR_FormatYUV420SemiPlanar
+                || format.eColorFormat == OMX_COLOR_FormatCbYCrY
+                || format.eColorFormat == OMX_TI_COLOR_FormatYUV420PackedSemiPlanar
+-               || format.eColorFormat == OMX_QCOM_COLOR_FormatYVU420SemiPlanar);
++               || format.eColorFormat == OMX_QCOM_COLOR_FormatYVU420SemiPlanar
++               || format.eColorFormat == OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB);
+ 
+         err = mOMX->setParameter(
+                 mNode, OMX_IndexParamVideoPortFormat,
+@@ -1350,6 +1448,8 @@
+             "audio_decoder.aac", "audio_encoder.aac" },
+         { MEDIA_MIMETYPE_AUDIO_VORBIS,
+             "audio_decoder.vorbis", "audio_encoder.vorbis" },
++        { MEDIA_MIMETYPE_AUDIO_WMA,
++            "audio_decoder.wmapro", "audio_encoder.wmapro" },
+         { MEDIA_MIMETYPE_AUDIO_G711_MLAW,
+             "audio_decoder.g711mlaw", "audio_encoder.g711mlaw" },
+         { MEDIA_MIMETYPE_AUDIO_G711_ALAW,
+@@ -1362,6 +1462,8 @@
+             "video_decoder.h263", "video_encoder.h263" },
+         { MEDIA_MIMETYPE_VIDEO_VPX,
+             "video_decoder.vpx", "video_encoder.vpx" },
++        { MEDIA_MIMETYPE_VIDEO_VC1,
++            "video_decoder.vc1", "video_encoder.vc1" },
+         { MEDIA_MIMETYPE_AUDIO_RAW,
+             "audio_decoder.raw", "audio_encoder.raw" },
+         { MEDIA_MIMETYPE_AUDIO_FLAC,
+@@ -1435,6 +1537,15 @@
+     CHECK_EQ((int)mState, (int)LOADED);
+ 
+     status_t err;
++    if ((mQuirks & kRequiresStoreMetaDataBeforeIdle)
++        && (mFlags & kStoreMetaDataInVideoBuffers)) {
++        err = mOMX->storeMetaDataInBuffers(mNode, kPortIndexInput, OMX_TRUE);
++        if (err != OK) {
++            ALOGE("Storing meta data in video buffers is not supported");
++            return err;
++        }
++    }
++
+     if (!(mQuirks & kRequiresLoadedToIdleAfterAllocation)) {
+         err = mOMX->sendCommand(mNode, OMX_CommandStateSet, OMX_StateIdle);
+         CHECK_EQ(err, (status_t)OK);
+@@ -1490,7 +1601,8 @@
+     }
+ 
+     status_t err = OK;
+-    if ((mFlags & kStoreMetaDataInVideoBuffers)
++    if (!(mQuirks & kRequiresStoreMetaDataBeforeIdle)
++            && (mFlags & kStoreMetaDataInVideoBuffers)
+             && portIndex == kPortIndexInput) {
+         err = mOMX->storeMetaDataInBuffers(mNode, kPortIndexInput, OMX_TRUE);
+         if (err != OK) {
+@@ -1686,7 +1798,7 @@
+             mNativeWindow.get(),
+             def.format.video.nFrameWidth,
+             def.format.video.nFrameHeight,
+-            def.format.video.eColorFormat);
++	    OmxToHALFormat(def.format.video.eColorFormat));
+ 
+     if (err != 0) {
+         ALOGE("native_window_set_buffers_geometry failed: %s (%d)",
+@@ -3501,6 +3613,47 @@
+     setRawAudioFormat(kPortIndexInput, 8000, numChannels);
+ }
+ 
++status_t OMXCodec::setWMAFormat(const sp<MetaData> &meta) {
++    uint32_t type;
++    const void *data;
++    size_t size;
++
++    if (!mIsEncoder) {
++        if (meta->findData(kKeyWMAInfo, &type, &data, &size)) {
++
++            OMX_AUDIO_PARAM_WMAPROTYPE profile;
++            InitOMXParams(&profile);
++            profile.nPortIndex = kPortIndexInput;
++
++            status_t err = mOMX->getParameter(
++                    mNode, OMX_IndexParamAudioWMAPro, &profile, sizeof(profile));
++            CHECK_EQ(err, (status_t)OK);
++
++            int32_t numChannels   = U16LE_AT((uint8_t *)((uint8_t *)data + 2));
++            int32_t sampleRate    = U32LE_AT((uint8_t *)((uint8_t *)data + 4));
++            int32_t bitRate       = U32LE_AT((uint8_t *)((uint8_t *)data + 8));
++            int32_t blockAlign    = U16LE_AT((uint8_t *)((uint8_t *)data + 12));
++            int32_t bitsPerSample = U16LE_AT((uint8_t *)((uint8_t *)data + 14));
++            ALOGV("numChannels:%d, sampleRate:%d, bitRate:%d, blockAlign:%d, bitsPerSample:%d",
++                    numChannels, sampleRate, bitRate, blockAlign, bitsPerSample);
++
++            profile.nChannels     = numChannels;
++            profile.nSamplingRate = sampleRate;
++            profile.nBitRate      = bitRate;
++            profile.nBlockAlign   = blockAlign;
++            profile.nSourceBitsPerSample = bitsPerSample;
++
++            err = mOMX->setParameter(
++                    mNode, OMX_IndexParamAudioWMAPro, &profile, sizeof(profile));
++            if (err != OK) {
++                CODEC_LOGE("setParameter('OMX_IndexParamAudioWMAPro') failed (err = %d)", err);
++                return err;
++            }
++        }
++    }
++    return OK;
++}
++
+ void OMXCodec::setImageOutputFormat(
+         OMX_COLOR_FORMATTYPE format, OMX_U32 width, OMX_U32 height) {
+     CODEC_LOGV("setImageOutputFormat(%ld, %ld)", width, height);
+@@ -4069,6 +4222,7 @@
+         "OMX_AUDIO_CodingWMA",
+         "OMX_AUDIO_CodingRA",
+         "OMX_AUDIO_CodingMIDI",
++        "OMX_AUDIO_CodingWMAPRO",
+     };
+ 
+     size_t numNames = sizeof(kNames) / sizeof(kNames[0]);
+@@ -4427,6 +4581,9 @@
+             } else if (video_def->eCompressionFormat == OMX_VIDEO_CodingAVC) {
+                 mOutputFormat->setCString(
+                         kKeyMIMEType, MEDIA_MIMETYPE_VIDEO_AVC);
++            } else if (video_def->eCompressionFormat == OMX_VIDEO_CodingWMV) {
++                mOutputFormat->setCString(
++                        kKeyMIMEType, MEDIA_MIMETYPE_VIDEO_VC1);
+             } else {
+                 CHECK(!"Unknown compression format.");
+             }
+diff -ruN av/media/libstagefright/PCMExtractor.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/PCMExtractor.cpp
+--- av/media/libstagefright/PCMExtractor.cpp	1969-12-31 18:00:00.000000000 -0600
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/PCMExtractor.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -0,0 +1,302 @@
++/*
++ * Copyright (C) ST-Ericsson SA 2010
++ * Copyright (C) 2010 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ * Author: Andreas Gustafsson (andreas.a.gustafsson@stericsson.com)
++ *         for ST-Ericsson
++ */
++
++//#define LOG_NDEBUG 0
++#define LOG_TAG "PCMExtractor"
++#include <utils/Log.h>
++
++#include "include/PCMExtractor.h"
++
++#include <media/stagefright/MediaBufferGroup.h>
++#include <media/stagefright/MediaDefs.h>
++#include <media/stagefright/MediaErrors.h>
++#include <media/stagefright/MetaData.h>
++#include <media/stagefright/foundation/ADebug.h>
++
++namespace android {
++
++/**
++* The default buffer size.
++*/
++static const uint16_t kDefaultNumChannels = 2;
++
++/**
++* The default Sample rate.
++*/
++static const uint32_t kDefaultSampleRate = 48000;
++
++/**
++* Bits per sample.
++*/
++static const uint16_t kDefaultBitsPerSample = 16;
++
++/**
++* The default buffer size.
++*/
++static const uint32_t kDefaultBufferSize = 4800;
++
++/**
++* Buffer duration in ms, to be used for input
++*/
++static const uint16_t kInputBufferDuration = 64;
++
++/**
++* Buffer granulairity in samples to be used for input.
++*/
++static const uint16_t kBufferGranularityInSamples = 16;
++
++struct PCMSource : public MediaSource {
++    PCMSource(
++            const sp<DataSource> &dataSource,
++            const sp<MetaData> &meta,
++            int32_t bitsPerSample,
++            off_t offset, size_t size);
++
++    virtual status_t start(MetaData *params = NULL);
++    virtual status_t stop();
++    virtual sp<MetaData> getFormat();
++
++    virtual status_t read(
++            MediaBuffer **buffer, const ReadOptions *options = NULL);
++
++protected:
++    virtual ~PCMSource();
++
++private:
++    static const size_t kMaxFrameSize;
++
++    sp<DataSource> mDataSource;
++    sp<MetaData> mMeta;
++    int32_t mSampleRate;
++    int32_t mNumChannels;
++    int32_t mBitsPerSample;
++    off_t mOffset;
++    size_t mSize;
++    bool mStarted;
++    MediaBufferGroup *mGroup;
++    off_t mCurrentPos;
++    uint32_t mBufferSize;
++
++    DISALLOW_EVIL_CONSTRUCTORS(PCMSource);
++};
++
++PCMExtractor::PCMExtractor(const sp<DataSource> &source)
++    : mDataSource(source),
++      mValidFormat(false) {
++    mInitCheck = init();
++}
++
++PCMExtractor::~PCMExtractor() {
++}
++
++sp<MetaData> PCMExtractor::getMetaData() {
++    sp<MetaData> meta = new MetaData;
++
++    if (mInitCheck != OK) {
++        return meta;
++    }
++
++    meta->setCString(kKeyMIMEType, "audio/raw");
++
++    return meta;
++}
++
++size_t PCMExtractor::countTracks() {
++    return mInitCheck == OK ? 1 : 0;
++}
++
++sp<MediaSource> PCMExtractor::getTrack(size_t index) {
++    if (mInitCheck != OK || index > 0) {
++        return NULL;
++    }
++
++    return new PCMSource(
++            mDataSource, mTrackMeta,
++            kDefaultBitsPerSample, mDataOffset, mDataSize);
++}
++
++sp<MetaData> PCMExtractor::getTrackMetaData(
++        size_t index, uint32_t flags) {
++    if (mInitCheck != OK || index > 0) {
++        return NULL;
++    }
++
++    return mTrackMeta;
++}
++
++status_t PCMExtractor::init() {
++    mDataOffset = 0;
++    mDataSize = 0;
++    mValidFormat = true;
++    mTrackMeta = new MetaData;mTrackMeta->setCString(kKeyMIMEType, MEDIA_MIMETYPE_AUDIO_RAW);
++    mTrackMeta->setInt32(kKeyChannelCount, kDefaultNumChannels);
++    mTrackMeta->setInt32(kKeySampleRate, kDefaultSampleRate);
++    return OK;
++}
++
++const size_t PCMSource::kMaxFrameSize = 4800;
++
++PCMSource::PCMSource(
++        const sp<DataSource> &dataSource,
++        const sp<MetaData> &meta,
++        int32_t bitsPerSample,
++        off_t offset, size_t size)
++    : mDataSource(dataSource),
++      mMeta(meta),
++      mSampleRate(0),
++      mNumChannels(0),
++      mBitsPerSample(bitsPerSample),
++      mOffset(offset),
++      mSize(size),
++      mStarted(false),
++      mGroup(NULL),
++      mBufferSize(0) {
++    CHECK(mMeta->findInt32(kKeySampleRate, &mSampleRate));
++    CHECK(mMeta->findInt32(kKeyChannelCount, &mNumChannels));
++}
++
++PCMSource::~PCMSource() {
++    if (mStarted) {
++        stop();
++    }
++}
++
++status_t PCMSource::start(MetaData *params) {
++    CHECK(!mStarted);
++
++    size_t size = kDefaultBufferSize;
++
++    if (mSampleRate != 0 && mNumChannels != 0) {
++        mBufferSize = mSampleRate * kInputBufferDuration / 1000 * mNumChannels * 2;
++        size_t granularity = kBufferGranularityInSamples * 2 * mNumChannels;
++        mBufferSize = (mBufferSize / granularity) * granularity;
++    }
++    mGroup = new MediaBufferGroup;
++    mGroup->add_buffer(new MediaBuffer(mBufferSize));
++
++    if (mBitsPerSample == 8) {
++        // As a temporary buffer for 8->16 bit conversion.
++        mGroup->add_buffer(new MediaBuffer(mBufferSize));
++    }
++
++    mCurrentPos = mOffset;
++
++    mStarted = true;
++    return OK;
++}
++
++status_t PCMSource::stop() {
++
++    CHECK(mStarted);
++    delete mGroup;
++    mGroup = NULL;
++
++    mStarted = false;
++    return OK;
++}
++
++sp<MetaData> PCMSource::getFormat() {
++   return mMeta;
++}
++
++status_t PCMSource::read(
++        MediaBuffer **out, const ReadOptions *options) {
++    *out = NULL;
++    int64_t seekTimeUs;
++    ReadOptions::SeekMode seek = ReadOptions::SEEK_CLOSEST_SYNC;
++    if (options != NULL && options->getSeekTo(&seekTimeUs,&seek)) {
++        int64_t pos = (seekTimeUs * mSampleRate) / 1000000 * mNumChannels * 2;
++        if (pos > mSize) {
++            pos = mSize;
++        }
++        mCurrentPos = pos + mOffset;
++    }
++
++    MediaBuffer *buffer;
++    status_t err = mGroup->acquire_buffer(&buffer);
++    if (err != OK) {
++        return err;
++    }
++
++    ssize_t n = mDataSource->readAt(
++            mCurrentPos, buffer->data(), mBufferSize);
++    if (n <= 0) {
++        buffer->release();
++        buffer = NULL;
++        return ERROR_END_OF_STREAM;
++    }
++
++    mCurrentPos += n;
++
++    buffer->set_range(0, n);
++
++    if (mBitsPerSample == 8) {
++        // Convert 8-bit unsigned samples to 16-bit signed.
++
++        MediaBuffer *tmp;
++        CHECK_EQ(mGroup->acquire_buffer(&tmp), (status_t)OK);
++
++        // The new buffer holds the sample number of samples, but each
++        // one is 2 bytes wide.
++        tmp->set_range(0, 2 * n);
++
++        int16_t *dst = (int16_t *)tmp->data();
++        const uint8_t *src = (const uint8_t *)buffer->data();
++        while (n-- > 0) {
++            *dst++ = ((int16_t)(*src) - 128) * 256;
++            ++src;
++        }
++
++        buffer->release();
++        buffer = tmp;
++    } else if (mBitsPerSample == 24) {
++        // Convert 24-bit signed samples to 16-bit signed.
++
++        const uint8_t *src =
++            (const uint8_t *)buffer->data() + buffer->range_offset();
++        int16_t *dst = (int16_t *)src;
++
++        size_t numSamples = buffer->range_length() / 3;
++        for (size_t i = 0; i < numSamples; ++i) {
++            int32_t x = (int32_t)(src[0] | src[1] << 8 | src[2] << 16);
++            x = (x << 8) >> 8;  // sign extension
++
++            x = x >> 8;
++            *dst++ = (int16_t)x;
++            src += 3;
++        }
++
++        buffer->set_range(buffer->range_offset(), 2 * numSamples);
++    }
++
++    size_t bytesPerSample = mBitsPerSample >> 3;
++
++    buffer->meta_data()->setInt64(
++            kKeyTime,
++            1000000LL * (mCurrentPos - mOffset)
++                / (mNumChannels * bytesPerSample) / mSampleRate);
++
++
++    *out = buffer;
++
++    return OK;
++}
++
++}  // namespace android
+diff -ruN av/media/libstagefright/rtsp/AH263Assembler.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/rtsp/AH263Assembler.cpp
+--- av/media/libstagefright/rtsp/AH263Assembler.cpp	2014-10-03 18:58:10.916876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/rtsp/AH263Assembler.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -100,7 +100,6 @@
+     }
+ 
+     unsigned payloadHeader = U16_AT(buffer->data());
+-    CHECK_EQ(payloadHeader >> 11, 0u);  // RR=0
+     unsigned P = (payloadHeader >> 10) & 1;
+     unsigned V = (payloadHeader >> 9) & 1;
+     unsigned PLEN = (payloadHeader >> 3) & 0x3f;
+@@ -111,8 +110,8 @@
+     buffer->setRange(buffer->offset() + skip, buffer->size() - skip);
+ 
+     if (P) {
+-        buffer->data()[0] = 0x00;
+-        buffer->data()[1] = 0x00;
++        buffer->data()[PLEN] = 0x00;
++        buffer->data()[PLEN + 1] = 0x00;
+     }
+ 
+     mPackets.push_back(buffer);
+diff -ruN av/media/libstagefright/rtsp/AMPEG4AudioAssembler.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/rtsp/AMPEG4AudioAssembler.cpp
+--- av/media/libstagefright/rtsp/AMPEG4AudioAssembler.cpp	2014-10-03 18:58:10.916876090 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/rtsp/AMPEG4AudioAssembler.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -201,13 +201,33 @@
+             CHECK_EQ(parseAudioObjectType(bits, &extensionAudioObjectType),
+                      (status_t)OK);
+ 
+-            sbrPresent = bits->getBits(1);
+-
+-            if (sbrPresent == 1) {
+-                unsigned extensionSamplingFreqIndex = bits->getBits(4);
+-                if (extensionSamplingFreqIndex == 0x0f) {
+-                    /* unsigned extensionSamplingFrequency = */bits->getBits(24);
++            if (extensionAudioObjectType == 5) {
++                sbrPresent = bits->getBits(1);
++                if (sbrPresent == 1) {
++                    unsigned extensionSamplingFreqIndex = bits->getBits(4);
++                    if (extensionSamplingFreqIndex == 0x0f) {
++                        /* unsigned extensionSamplingFrequency = */bits->getBits(24);
++                    }
++                    if (bits->numBitsLeft() >= 12) {
++                        syncExtensionType = bits->getBits(11);
++                        if (syncExtensionType == 0x548) {
++                            /* unsigned psPresent */bits->getBits(1);
++                        } else {
++                            // Rewind bitstream so that the reading of second
++                            // syncExtensionType has no effect
++                            bits->rewindBits(11);
++                        }
++                    }
++                }
++            } else if (extensionAudioObjectType == 22) {
++                sbrPresent = bits->getBits(1);
++                if (sbrPresent == 1) {
++                    unsigned extensionSamplingFreqIndex = bits->getBits(4);
++                    if (extensionSamplingFreqIndex == 0x0f) {
++                        /* unsigned extensionSamplingFrequency = */bits->getBits(24);
++                    }
+                 }
++                /* unsigned extensionChannelConfiguration = */bits->getBits(4);
+             }
+ 
+             size_t numBitsInExtension =
+@@ -223,7 +243,7 @@
+                 bits->skipBits(8 - (numBitsInExtension & 7));
+             }
+         } else {
+-            bits->putBits(syncExtensionType, 11);
++            bits->rewindBits(11);
+         }
+     }
+ 
+@@ -335,11 +355,14 @@
+             break;
+     }
+ 
++    status_t parseResult = OK;
+     *otherDataPresent = bits->getBits(1);
+     *otherDataLenBits = 0;
+     if (*otherDataPresent) {
+         if (audioMuxVersion == 1) {
+             TRESPASS();  // XXX to be implemented
++        } else if (bits->numBitsLeft() < 9) {
++            parseResult = ERROR_MALFORMED;
+         } else {
+             *otherDataLenBits = 0;
+ 
+@@ -349,13 +372,45 @@
+                 otherDataLenEsc = bits->getBits(1);
+                 unsigned otherDataLenTmp = bits->getBits(8);
+                 (*otherDataLenBits) += otherDataLenTmp;
+-            } while (otherDataLenEsc);
++            } while (otherDataLenEsc && bits->numBitsLeft() >= 9);
++
++            if (otherDataLenEsc) {
++                parseResult = ERROR_MALFORMED;
++            }
++        }
++    }
++
++    if (parseResult == OK && bits->numBitsLeft() >= 1) {
++        unsigned crcCheckPresent = bits->getBits(1);
++        if (crcCheckPresent && bits->numBitsLeft() >= 8) {
++            /* unsigned crcCheckSum = */bits->getBits(8);
++        } else if (crcCheckPresent && bits->numBitsLeft() < 8) {
++            parseResult = ERROR_MALFORMED;
++        }
++    } else {
++        parseResult = ERROR_MALFORMED;
++    }
++
++    // Verify that only bits are left for byte aligning and that
++    // any remaining bits are 0
++    if (bits->numBitsLeft() / 8 > 0) {
++        parseResult = ERROR_MALFORMED;
++    } else {
++        unsigned remainder = bits->getBits(bits->numBitsLeft());
++        if (remainder != 0) {
++            parseResult = ERROR_MALFORMED;
+         }
+     }
+ 
+-    unsigned crcCheckPresent = bits->getBits(1);
+-    if (crcCheckPresent) {
+-        /* unsigned crcCheckSum = */bits->getBits(8);
++    // Check if config string parsing has failed (then probably due to a
++    // malformed AudioSpecificConfig) and if so, assume most common
++    // configuration for the variables after AudioSpecificConfig.
++    if (parseResult != OK) {
++        ALOGW("LATM config string parsing has failed, assuming most common case "
++             "of frameLengthType=0, otherDataPresent=0, and otherDataLenBits=0");
++        *frameLengthType = 0;
++        *otherDataPresent = 0;
++        *otherDataLenBits = 0;
+     }
+ 
+     return OK;
+diff -ruN av/media/libstagefright/SampleTable.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/SampleTable.cpp
+--- av/media/libstagefright/SampleTable.cpp	2014-10-03 18:58:10.644876080 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/SampleTable.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -346,7 +346,7 @@
+ }
+ 
+ status_t SampleTable::setCompositionTimeToSampleParams(
+-        off64_t data_offset, size_t data_size) {
++        off64_t data_offset, size_t data_size, uint32_t *consumed_offset) {
+     ALOGI("There are reordered frames present.");
+ 
+     if (mCompositionTimeDeltaEntries != NULL || data_size < 8) {
+@@ -367,7 +367,7 @@
+ 
+     size_t numEntries = U32_AT(&header[4]);
+ 
+-    if (data_size != (numEntries + 1) * 8) {
++    if (data_size < (numEntries + 1) * 8) {
+         return ERROR_MALFORMED;
+     }
+ 
+@@ -390,6 +390,7 @@
+     mCompositionDeltaLookup->setEntries(
+             mCompositionTimeDeltaEntries, mNumCompositionTimeDeltaEntries);
+ 
++    *consumed_offset = (numEntries + 1) * 8;
+     return OK;
+ }
+ 
+diff -ruN av/media/libstagefright/StagefrightMetadataRetriever.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/StagefrightMetadataRetriever.cpp
+--- av/media/libstagefright/StagefrightMetadataRetriever.cpp	2014-10-03 18:58:10.644876080 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/StagefrightMetadataRetriever.cpp	2014-01-07 19:45:26.000000000 -0600
+@@ -18,6 +18,8 @@
+ #define LOG_TAG "StagefrightMetadataRetriever"
+ #include <utils/Log.h>
+ 
++#include <sys/stat.h>
++
+ #include "include/StagefrightMetadataRetriever.h"
+ 
+ #include <media/stagefright/foundation/ADebug.h>
+@@ -83,7 +85,21 @@
+         int fd, int64_t offset, int64_t length) {
+     fd = dup(fd);
+ 
+-    ALOGV("setDataSource(%d, %lld, %lld)", fd, offset, length);
++    // Get uri from fd (debug)
++    char uri[256];
++    snprintf(uri, sizeof(uri), "fd=%d", fd);// At least fd is traced
++
++    char buffer[256];
++    snprintf(buffer, sizeof(buffer), "/proc/%d/fd/%d", gettid(), fd);
++    struct stat s;
++    if (lstat(buffer, &s) == 0) {
++        if ((s.st_mode & S_IFMT) == S_IFLNK) {
++            int len = readlink(buffer, uri, sizeof(uri));// Get uri from link
++            uri[len] = 0;
++        }
++    }
++
++    ALOGV("setDataSource(%d, %lld, %lld, %s)", fd, offset, length, uri);
+ 
+     mParsedMetaData = false;
+     mMetaData.clear();
+@@ -94,6 +110,8 @@
+ 
+     status_t err;
+     if ((err = mSource->initCheck()) != OK) {
++        ALOGE("Unable to create data source for '%s'.", uri);
++
+         mSource.clear();
+ 
+         return err;
+@@ -102,11 +120,16 @@
+     mExtractor = MediaExtractor::Create(mSource);
+ 
+     if (mExtractor == NULL) {
++        ALOGE("Unable to instantiate an extractor for '%s'.", uri);
++
+         mSource.clear();
+ 
+         return UNKNOWN_ERROR;
+     }
+ 
++    // Stamp source with uri (debug)
++    mSource->setCharUri(uri);
++
+     return OK;
+ }
+ 
+@@ -289,20 +312,22 @@
+     ALOGV("getFrameAtTime: %lld us option: %d", timeUs, option);
+ 
+     if (mExtractor.get() == NULL) {
+-        ALOGV("no extractor.");
++        ALOGW("no extractor.");
+         return NULL;
+     }
+ 
+     sp<MetaData> fileMeta = mExtractor->getMetaData();
+ 
+     if (fileMeta == NULL) {
+-        ALOGV("extractor doesn't publish metadata, failed to initialize?");
++        ALOGW("extractor doesn't publish metadata for %s , failed to initialize?",
++             mSource->getCharUri());
+         return NULL;
+     }
+ 
+     int32_t drm = 0;
+     if (fileMeta->findInt32(kKeyIsDRM, &drm) && drm != 0) {
+-        ALOGE("frame grab not allowed.");
++        ALOGE("frame grab not allowed. Failed to extract thumbnail for %s",
++             mSource->getCharUri());
+         return NULL;
+     }
+ 
+@@ -320,7 +345,8 @@
+     }
+ 
+     if (i == n) {
+-        ALOGV("no video track found.");
++        ALOGW("no video track found. Failed to extract thumbnail for %s",
++             mSource->getCharUri());
+         return NULL;
+     }
+ 
+@@ -330,7 +356,9 @@
+     sp<MediaSource> source = mExtractor->getTrack(i);
+ 
+     if (source.get() == NULL) {
+-        ALOGV("unable to instantiate video track.");
++        ALOGW("unable to instantiate video track. "
++             "Failed to extract thumbnail for %s",
++             mSource->getCharUri());
+         return NULL;
+     }
+ 
+@@ -351,11 +379,22 @@
+                 timeUs, option);
+ 
+     if (frame == NULL) {
+-        ALOGV("Software decoder failed to extract thumbnail, "
+-             "trying hardware decoder.");
++        ALOGV("Software decoder failed to extract thumbnail for %s, "
++             "trying hardware decoder.", mSource->getCharUri());
+ 
+         frame = extractVideoFrameWithCodecFlags(&mClient, trackMeta, source, 0,
+                         timeUs, option);
++
++        if (frame == NULL) {
++            ALOGE("Hardware decoder failed to extract thumbnail for %s",
++                 mSource->getCharUri());
++        } else {
++            ALOGV("Hardware decoder succeeded to extract thumbnail for %s",
++                 mSource->getCharUri());
++        }
++    } else {
++        ALOGV("Software decoder succeeded to extract thumbnail for %s",
++             mSource->getCharUri());
+     }
+ 
+     return frame;
+diff -ruN av/media/libstagefright/SurfaceMediaSource.cpp /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/SurfaceMediaSource.cpp
+--- av/media/libstagefright/SurfaceMediaSource.cpp	2014-10-03 18:58:10.644876080 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/media/libstagefright/SurfaceMediaSource.cpp	2014-01-07 19:45:30.000000000 -0600
+@@ -33,6 +33,15 @@
+ 
+ #include <private/gui/ComposerService.h>
+ 
++#include <ui/GraphicBufferMapper.h>
++#include <ui/Region.h>
++#include <hardware/hardware.h>
++#include <ui/PixelFormat.h>
++
++#include <cutils/properties.h>
++
++#define STE_ENCODER_COLOR_FORMAT "ste.video.enc.fmt"
++
+ namespace android {
+ 
+ SurfaceMediaSource::SurfaceMediaSource(uint32_t bufferWidth, uint32_t bufferHeight) :
+@@ -44,7 +53,8 @@
+     mStopped(false),
+     mNumFramesReceived(0),
+     mNumFramesEncoded(0),
+-    mFirstFrameTimestamp(0)
++    mFirstFrameTimestamp(0),
++    mIsReading(false)
+ {
+     ALOGV("SurfaceMediaSource::SurfaceMediaSource");
+ 
+@@ -56,9 +66,13 @@
+     mBufferQueue->setDefaultBufferSize(bufferWidth, bufferHeight);
+     mBufferQueue->setSynchronousMode(true);
+     mBufferQueue->setConsumerUsageBits(GRALLOC_USAGE_HW_VIDEO_ENCODER |
+-            GRALLOC_USAGE_HW_TEXTURE);
++            GRALLOC_USAGE_HW_2D);
+ 
+     sp<ISurfaceComposer> composer(ComposerService::getComposerService());
++    mGraphicBufferAlloc = composer->createGraphicBufferAlloc();
++    if (mGraphicBufferAlloc == NULL) {
++        ALOGE("createGraphicBufferAlloc() failed in SurfaceMediaSource");
++    }
+ 
+     // Note that we can't create an sp<...>(this) in a ctor that will not keep a
+     // reference once the ctor ends, as that would cause the refcount of 'this'
+@@ -74,10 +88,37 @@
+         ALOGE("SurfaceMediaSource: error connecting to BufferQueue: %s (%d)",
+                 strerror(-err), err);
+     }
++
++    for (int i = 0; i < MAX_UNDEQUEUED_BUFFERS; i++) {
++        mGraphicBufferYuv[i] = NULL;
++    }
++
++    // get video encoder color format property
++    char value[PROPERTY_VALUE_MAX];
++    property_get(STE_ENCODER_COLOR_FORMAT, &value[0], "");
++    ALOGV("%s STE_ENCODER_COLOR_FORMAT = %s ", __func__, value);
++
++    if (strncmp(value, "yuv420mb", 8) == 0) {
++        mYuvPixelFormat = PIXEL_FORMAT_YCBCR42XMBN;
++    } else if (strncmp(value, "yuv420sp", 8) == 0) {
++        mYuvPixelFormat = PIXEL_FORMAT_YCbCr_420_SP;
++    } else {
++        ALOGE("No Input Color Format Property Using PIXEL_FORMAT_UNKNOWN");
++        mYuvPixelFormat = PIXEL_FORMAT_UNKNOWN;
++    }
++
++    hw_module_t const* module;
++    if (hw_get_module(COPYBIT_HARDWARE_MODULE_ID, &module) == 0) {
++        copybit_open(module, &mBlitEngine);
++    }
+ }
+ 
+ SurfaceMediaSource::~SurfaceMediaSource() {
+     ALOGV("SurfaceMediaSource::~SurfaceMediaSource");
++    if (mBlitEngine != NULL) {
++        copybit_close(mBlitEngine);
++        mBlitEngine = NULL;
++    }
+     if (!mStopped) {
+         reset();
+     }
+@@ -276,13 +317,43 @@
+         mBufferSlot[mCurrentSlot] = item.mGraphicBuffer;
+     }
+ 
+-    mCurrentBuffers.push_back(mBufferSlot[mCurrentSlot]);
++    // Allocate buffers
++    if (mGraphicBufferYuv[mCurrentSlot] == NULL && conversionIsNeeded(mBufferSlot[mCurrentSlot])) {
++        ALOGV("Creating new graphicBuffer");
++
++        status_t error;
++        sp<GraphicBuffer> graphicBufferYuv(
++                mGraphicBufferAlloc->createGraphicBuffer(
++                        mWidth, mHeight, mYuvPixelFormat,
++                        GRALLOC_USAGE_HW_VIDEO_ENCODER | GRALLOC_USAGE_HW_2D, &error));
++        if (graphicBufferYuv == NULL) {
++            ALOGE("dequeueBuffer: SurfaceComposer::createGraphicBuffer "
++                    "failed");
++            return error;
++        }
++
++        mGraphicBufferYuv[mCurrentSlot] = graphicBufferYuv;
++    }
++
+     int64_t prevTimeStamp = mCurrentTimestamp;
+-    mCurrentTimestamp = item.mTimestamp;
+ 
+-    mNumFramesEncoded++;
+-    // Pass the data to the MediaBuffer. Pass in only the metadata
+-    passMetadataBuffer(buffer, mBufferSlot[mCurrentSlot]->handle);
++    if (conversionIsNeeded(mBufferSlot[mCurrentSlot]) &&
++            OK == convert(mBufferSlot[mCurrentSlot], mGraphicBufferYuv[mCurrentSlot])) {
++        mCurrentBuffers.push_back(mGraphicBufferYuv[mCurrentSlot]);
++        mCurrentBuffersDQ.push_back(mBufferSlot[mCurrentSlot]);
++        mCurrentTimestamp = item.mTimestamp;
++
++        mNumFramesEncoded++;
++        // Pass the data to the MediaBuffer. Pass in only the metadata
++        passMetadataBuffer(buffer, mGraphicBufferYuv[mCurrentSlot]->handle);
++    } else {
++        mCurrentBuffers.push_back(mBufferSlot[mCurrentSlot]);
++        mCurrentTimestamp = item.mTimestamp;
++
++        mNumFramesEncoded++;
++        // Pass the data to the MediaBuffer. Pass in only the metadata
++        passMetadataBuffer(buffer, mBufferSlot[mCurrentSlot]->handle);
++    }
+ 
+     (*buffer)->setObserver(this);
+     (*buffer)->add_ref();
+@@ -291,10 +362,19 @@
+             mNumFramesEncoded, mCurrentTimestamp / 1000,
+             mCurrentTimestamp / 1000 - prevTimeStamp / 1000);
+ 
++    mIsReading = true;
+ 
+     return OK;
+ }
+ 
++bool SurfaceMediaSource::conversionIsNeeded(const sp<GraphicBuffer>& graphicBuffer) {
++    // Output format not known so no conversion
++    if (mYuvPixelFormat == PIXEL_FORMAT_UNKNOWN) {
++        return false;
++    }
++    return (graphicBuffer->getPixelFormat() != mYuvPixelFormat);
++}
++
+ static buffer_handle_t getMediaBufferHandle(MediaBuffer *buffer) {
+     // need to convert to char* for pointer arithmetic and then
+     // copy the byte stream into our handle
+@@ -311,10 +391,15 @@
+     Mutex::Autolock lock(mMutex);
+ 
+     buffer_handle_t bufferHandle = getMediaBufferHandle(buffer);
++    buffer_handle_t graphicbufferHandle = NULL;
+ 
+     for (size_t i = 0; i < mCurrentBuffers.size(); i++) {
+         if (mCurrentBuffers[i]->handle == bufferHandle) {
+             mCurrentBuffers.removeAt(i);
++            if (mCurrentBuffersDQ.itemAt(i) != NULL) {
++                graphicbufferHandle = mCurrentBuffersDQ.itemAt(i)->handle;
++                mCurrentBuffersDQ.removeAt(i);
++            }
+             foundBuffer = true;
+             break;
+         }
+@@ -329,7 +414,7 @@
+             continue;
+         }
+ 
+-        if (bufferHandle == mBufferSlot[id]->handle) {
++        if (graphicbufferHandle == mBufferSlot[id]->handle || bufferHandle == mBufferSlot[id]->handle) {
+             ALOGV("Slot %d returned, matches handle = %p", id,
+                     mBufferSlot[id]->handle);
+ 
+@@ -374,11 +459,58 @@
+     Mutex::Autolock lock(mMutex);
+ 
+     mFrameAvailableCondition.signal();
+-    mStopped = true;
++    if (mIsReading) {
++        mStopped = true;
++    }
+ 
+     for (int i = 0; i < BufferQueue::NUM_BUFFER_SLOTS; i++) {
+        mBufferSlot[i] = 0;
+     }
+ }
+ 
++// Convert RGBA data received from surface to color format used by encoder
++status_t SurfaceMediaSource::convert(const sp<GraphicBuffer> &srcBuf, const sp<GraphicBuffer> &dstBuf) {
++    copybit_image_t dstImg;
++    dstImg.w = dstBuf->getWidth();
++    dstImg.h = dstBuf->getHeight();
++    dstImg.format = dstBuf->getPixelFormat();
++    dstImg.handle = (native_handle_t*) dstBuf->getNativeBuffer()->handle;
++
++    copybit_image_t srcImg;
++    srcImg.w = srcBuf->getWidth();
++    srcImg.h = srcBuf->getHeight();
++    srcImg.format = srcBuf->getPixelFormat();
++    srcImg.base = NULL;
++    srcImg.handle = (native_handle_t*) srcBuf->getNativeBuffer()->handle;
++
++    copybit_rect_t dstCrop;
++    dstCrop.l = 0;
++    dstCrop.t = 0;
++    dstCrop.r = dstBuf->getWidth();
++    dstCrop.b = dstBuf->getHeight();
++
++    copybit_rect_t srcCrop;
++    srcCrop.l = 0;
++    srcCrop.t = 0;
++    srcCrop.r = srcBuf->getWidth();
++    srcCrop.b = srcBuf->getHeight();
++
++    ALOGV("%s dWidth=%d, dHeight=%d, dPixel=%x, sPixel=%x ", __func__, dstImg.w, dstImg.h, dstImg.format, srcImg.format);
++
++    region_iterator clip(Region(Rect(dstCrop.r, dstCrop.b)));
++    mBlitEngine->set_parameter(mBlitEngine, COPYBIT_TRANSFORM, 0);
++
++    int err = mBlitEngine->stretch(
++            mBlitEngine, &dstImg, &srcImg, &dstCrop, &srcCrop, &clip);
++    if (err != 0) {
++        ALOGE("\nError: Blit stretch operation failed (err:%d)\n", err);
++        if (mBlitEngine) {
++            copybit_close(mBlitEngine);
++            mBlitEngine = NULL;
++        }
++        return UNKNOWN_ERROR;
++    }
++
++    return OK;
++}
+ } // end of namespace android
+diff -ruN av/services/audioflinger/AudioPolicyService.cpp /media/Exhibit/s1-4.1/frameworks/av/services/audioflinger/AudioPolicyService.cpp
+--- av/services/audioflinger/AudioPolicyService.cpp	2014-10-03 18:58:10.940876091 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/services/audioflinger/AudioPolicyService.cpp	2014-01-07 19:45:25.000000000 -0600
+@@ -688,8 +688,9 @@
+                     if (command->mWaitStatus) {
+                         command->mCond.signal();
+                         mWaitWorkCV.wait(mLock);
++                    } else {
++                        delete data;
+                     }
+-                    delete data;
+                     }break;
+                 case SET_PARAMETERS: {
+                     ParametersData *data = (ParametersData *)command->mParam;
+@@ -699,8 +700,9 @@
+                     if (command->mWaitStatus) {
+                         command->mCond.signal();
+                         mWaitWorkCV.wait(mLock);
++                    } else {
++                        delete data;
+                     }
+-                    delete data;
+                     }break;
+                 case SET_VOICE_VOLUME: {
+                     VoiceVolumeData *data = (VoiceVolumeData *)command->mParam;
+@@ -710,13 +712,16 @@
+                     if (command->mWaitStatus) {
+                         command->mCond.signal();
+                         mWaitWorkCV.wait(mLock);
++                    } else {
++                        delete data;
+                     }
+-                    delete data;
+                     }break;
+                 default:
+                     ALOGW("AudioCommandThread() unknown command %d", command->mCommand);
+                 }
+-                delete command;
++                if (!mLastCommand.mWaitStatus) {
++                    delete command;
++                }
+                 waitTime = INT64_MAX;
+             } else {
+                 waitTime = mAudioCommands[0]->mTime - curTime;
+@@ -824,6 +829,8 @@
+     if (command->mWaitStatus) {
+         command->mCond.wait(mLock);
+         status =  command->mStatus;
++        delete data;
++        delete command;
+         mWaitWorkCV.signal();
+     }
+     return status;
+@@ -854,6 +861,8 @@
+     if (command->mWaitStatus) {
+         command->mCond.wait(mLock);
+         status =  command->mStatus;
++        delete data;
++        delete command;
+         mWaitWorkCV.signal();
+     }
+     return status;
+@@ -880,6 +889,8 @@
+     if (command->mWaitStatus) {
+         command->mCond.wait(mLock);
+         status =  command->mStatus;
++        delete data;
++        delete command;
+         mWaitWorkCV.signal();
+     }
+     return status;
+diff -ruN av/services/camera/libcameraservice/CameraService.cpp /media/Exhibit/s1-4.1/frameworks/av/services/camera/libcameraservice/CameraService.cpp
+--- av/services/camera/libcameraservice/CameraService.cpp	2014-10-03 18:58:10.948876091 -0500
++++ /media/Exhibit/s1-4.1/frameworks/av/services/camera/libcameraservice/CameraService.cpp	2014-01-07 19:45:25.000000000 -0600
+@@ -721,9 +721,9 @@
+     Mutex::Autolock lock(mLock);
+     if (checkPidAndHardware() != NO_ERROR) return;
+ 
+-    mCameraService->playSound(SOUND_RECORDING);
+-    disableMsgType(CAMERA_MSG_VIDEO_FRAME);
+     mHardware->stopRecording();
++    disableMsgType(CAMERA_MSG_VIDEO_FRAME);
++    mCameraService->playSound(SOUND_RECORDING);
+ 
+     mPreviewBuffer.clear();
+ }

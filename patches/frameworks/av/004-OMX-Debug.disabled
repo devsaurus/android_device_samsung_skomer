@@ -1,0 +1,94 @@
+From d217243b0fa1997ffdb54d202b61eafaac0f290a Mon Sep 17 00:00:00 2001
+From: Meticulus <theonejohnnyd@gmail.com>
+Date: Mon, 6 Oct 2014 13:32:21 -0500
+Subject: [PATCH] OMX-Debug
+
+Change-Id: I62d6ddd5827b32165b65fc128d4109051e857851
+---
+ media/libstagefright/OMXClient.cpp |   63 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 62 insertions(+), 1 deletion(-)
+
+diff --git a/media/libstagefright/OMXClient.cpp b/media/libstagefright/OMXClient.cpp
+index fb87de0..adff220 100644
+--- a/media/libstagefright/OMXClient.cpp
++++ b/media/libstagefright/OMXClient.cpp
+@@ -23,7 +23,9 @@
+ #include <media/stagefright/foundation/ADebug.h>
+ #include <media/stagefright/OMXClient.h>
+ #include <utils/KeyedVector.h>
+-
++#ifdef STE_HARDWARE
++#include <OMX_Component.h>
++#endif
+ #include "include/OMX.h"
+ 
+ namespace android {
+@@ -247,6 +249,65 @@ status_t MuxOMX::getParameter(
+ status_t MuxOMX::setParameter(
+         node_id node, OMX_INDEXTYPE index,
+         const void *params, size_t size) {
++	ALOGI("Meticulus: setParameter index=%lX\n",index);
++	if(index == OMX_IndexParamVideoPortFormat) {
++		ALOGI("Meticulus: setParameter OMX_IndexParamVideoPortFormat");
++		OMX_VIDEO_PARAM_PORTFORMATTYPE *pp = (OMX_VIDEO_PARAM_PORTFORMATTYPE *)params;
++		ALOGI("Meticulus: setParameter node_id=%d nPortIndex=%lu nIndex=%lu eCompressionFormat=%lX eColorFormat=%lX\n",node, pp->nPortIndex, pp->nIndex, pp->eCompressionFormat, pp->eColorFormat);
++		switch(pp->eCompressionFormat){
++			case OMX_VIDEO_CodingWMV:
++				ALOGI("Meticulus: eCompressionFormat OMX_VIDEO_CodingWMV\n");
++				break;
++			case OMX_VIDEO_CodingH263:
++				ALOGI("Meticulus: eCompressionFormat OMX_VIDEO_CodingH263\n");
++				break;
++			case OMX_VIDEO_CodingMPEG4:
++				ALOGI("Meticulus: eCompressionFormat OMX_VIDEO_CodingMPEG4\n");
++				break;
++			case OMX_VIDEO_CodingAVC:
++				ALOGI("Meticulus: eCompressionFormat OMX_VIDEO_CodingAVC\n");
++				break;
++		}
++		switch(pp->eColorFormat){
++			case OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB:
++				ALOGI("Meticulus: eColorFormat OMX_STE_COLOR_FormatYUV420PackedSemiPlanarMB\n");
++				break;
++		}
++			
++		
++	}
++	if(index == OMX_IndexParamPortDefinition) {
++		/* typedef struct OMX_PARAM_PORTDEFINITIONTYPE {
++		    OMX_U32 nSize;                 /**< Size of the structure in bytes 
++		    OMX_VERSIONTYPE nVersion;      /**< OMX specification version information 
++		    OMX_U32 nPortIndex;            /**< Port number the structure applies to 
++		    OMX_DIRTYPE eDir;              /**< Direction (input or output) of this port 
++		    OMX_U32 nBufferCountActual;    /**< The actual number of buffers allocated on this port
++		    OMX_U32 nBufferCountMin;       /**< The minimum number of buffers this port requires 
++		    OMX_U32 nBufferSize;           /**< Size, in bytes, for buffers to be used for this channel 
++		    OMX_BOOL bEnabled;             /**< Ports default to enabled and are enabled/disabled by
++		                                        OMX_CommandPortEnable/OMX_CommandPortDisable.
++       		                                 When disabled a port is unpopulated. A disabled port
++               		                         is not populated with buffers on a transition to IDLE. 
++		    OMX_BOOL bPopulated;           /**< Port is populated with all of its buffers as indicated by
++		                                        nBufferCountActual. A disabled port is always unpopulated. 
++                		                        An enabled port is populated on a transition to OMX_StateIdle
++                		                        and unpopulated on a transition to loaded. 
++		    OMX_PORTDOMAINTYPE eDomain;    /**< Domain of the port. Determines the contents of metadata below. 
++		    union {
++		        OMX_AUDIO_PORTDEFINITIONTYPE audio;
++		        OMX_VIDEO_PORTDEFINITIONTYPE video;
++		        OMX_IMAGE_PORTDEFINITIONTYPE image;
++		        OMX_OTHER_PORTDEFINITIONTYPE other;
++		    } format;
++		    OMX_BOOL bBuffersContiguous;
++		    OMX_U32 nBufferAlignment;
++		    } OMX_PARAM_PORTDEFINITIONTYPE; */
++		ALOGI("Meticulus: OMX_IndexParamPortDefinition");
++		OMX_PARAM_PORTDEFINITIONTYPE *pp = (OMX_PARAM_PORTDEFINITIONTYPE *)params;
++		ALOGI("Meticulus: nPortIndex=%lu nBufferCountActual=%lu nBufferCountMin=%lu nBufferSize=%lu\n",
++			pp->nPortIndex, pp->nBufferCountActual, pp->nBufferCountMin, pp->nBufferSize);
++	}
+     return getOMX(node)->setParameter(node, index, params, size);
+ }
+ 
+-- 
+1.7.9.5
+
