@@ -93,6 +93,7 @@ BOARD_BLUEDROID_VENDOR_CONF := device/samsung/skomer/bluetooth/btvendor_skomer.t
 
 # RIL
 BOARD_RIL_CLASS := ../../../device/samsung/skomer/ril/
+COMMON_GLOBAL_CFLAGS += -DSAMSUNG_PROPRIETARY_RIL_WORKAROUND
 
 # Browser
 ENABLE_WEBGL := true
