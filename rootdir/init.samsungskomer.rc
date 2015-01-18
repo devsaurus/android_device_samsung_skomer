@@ -488,6 +488,8 @@ service admsrv /system/bin/admsrv
     ioprio rt 4
     capability NET_ADMIN NET_RAW SYS_NICE
 
+    seclabel u:r:admsrv:s0
+
 # AT daemon
 service atd /system/bin/at_core -mode normal -serial ttyAMA2
     class modem
