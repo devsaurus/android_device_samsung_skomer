@@ -1,0 +1,4 @@
+domain_trans(init, rootfs, admsrv)
+allow init self:capability sys_module;
+allow init init:process { execmem };
+allow init shell_data_file:sock_file { getattr open read write };

@@ -125,3 +125,28 @@ BOARD_HAS_NO_MISC_PARTITION := true
 BOARD_CUSTOM_GRAPHICS := ../../../device/samsung/skomer/recovery/graphics.c
 BOARD_HAS_NO_SELECT_BUTTON := true
 BOARD_SUPPRESS_EMMC_WIPE := true
+
+# SELinux
+BOARD_SEPOLICY_DIRS += \
+	device/samsung/skomer/sepolicy
+
+BOARD_SEPOLICY_UNION += \
+	file_contexts \
+	admsrv.te \
+	bluetooth.te \
+	bootanim.te \
+	init.te \
+	init_shell.te \
+	healthd.te \
+	mediaserver.te \
+	platform_app.te \
+	radio.te \
+	rild.te \
+	surfaceflinger.te \
+	system_app.te \
+	system_server.te \
+	untrusted_app.te \
+	vold.te \
+	wpa.te \
+	zygote.te
+
