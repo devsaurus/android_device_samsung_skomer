@@ -132,7 +132,8 @@ PRODUCT_PACKAGES += \
     audio.usb.default \
     libasound \
     libaudioutils \
-    libtinyalsa
+    libtinyalsa \
+    libdashplayer
 
 # Sensors
 PRODUCT_PACKAGES += \
