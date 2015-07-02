@@ -55,7 +55,7 @@ TARGET_KERNEL_SOURCE := kernel/samsung/skomer
 BOARD_KERNEL_BASE := 0x00000000
 BOARD_RECOVERY_BASE := 0x00000000
 BOARD_KERNEL_PAGESIZE := 2048
-BOARD_KERNEL_CMDLINE := "androidboot.selinux=permissive"
+BOARD_KERNEL_CMDLINE := "androidboot.selinux=disabled"
 
 # Graphics
 USE_OPENGL_RENDERER := true
