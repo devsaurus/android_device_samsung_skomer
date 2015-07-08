@@ -1,0 +1,8 @@
+# Graphics
+/dev/hwmem u:object_r:graphics_device:s0
+/dev/comp0 u:object_r:graphics_device:s0
+/dev/mali u:object_r:graphics_device:s0
+/dev/b2r2_blt u:object_r:graphics_device:s0
+
+# admsrv
+/system/bin/admsrv u:object_r:admsrv_exec:s0 
